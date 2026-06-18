@@ -206,53 +206,68 @@ def draw_trophy(draw, x, y, size=28):
 # ─────────────────────────────────────────
 
 def make_rank_card(username: str, cash: int, rank: int, total: int) -> BytesIO:
-    W, H    = 700, 260
-    BG      = (13, 13, 30)
-    CARD_BG = (20, 20, 46)
-    ACCENT  = (99, 179, 237)   # blue
+    # 2x resolution for crisp output
+    SCALE   = 2
+    W, H    = 720 * SCALE, 280 * SCALE
+    BG      = (10, 12, 26)
+    CARD_BG = (18, 20, 42)
+    ACCENT  = (99, 179, 237)
     GREEN   = (74, 222, 128)
+    GOLD    = (255, 184, 0)
 
     img  = Image.new("RGBA", (W, H), (*BG, 255))
     draw = ImageDraw.Draw(img)
-    draw_noise_bg(img, BG, amount=25)
+    draw_noise_bg(img, BG, amount=30)
 
+    PAD = 20 * SCALE
     # outer card
-    draw_rounded_rect(draw, (24, 24, W - 24, H - 24), 18, fill=(*CARD_BG, 255), border=(*ACCENT, 100), border_width=2)
+    draw_rounded_rect(draw, (PAD, PAD, W - PAD, H - PAD), 18 * SCALE,
+                      fill=(*CARD_BG, 255), border=(*ACCENT, 80), border_width=2 * SCALE)
 
     # left accent bar
-    draw.rectangle([24, 24, 30, H - 24], fill=(*ACCENT, 220))
+    bar_color = GOLD if rank == 1 else ((168,168,168) if rank == 2 else ((205,127,50) if rank == 3 else ACCENT))
+    draw.rectangle([PAD, PAD, PAD + 6 * SCALE, H - PAD], fill=(*bar_color, 255))
 
-    # rank badge
-    draw_medal(draw, 80, H // 2, rank)
+    # medal badge
+    draw_medal(draw, PAD + 44 * SCALE, H // 2, rank, r=22 * SCALE)
 
-    # username
-    ufont = get_font(26, bold=True)
-    draw.text((120, 70), username[:26], fill="#ffffff", font=ufont)
+    # header: username
+    ufont = get_font(26 * SCALE, bold=True)
+    draw.text((PAD + 80 * SCALE, PAD + 28 * SCALE), username[:26], fill="#ffffff", font=ufont)
 
-    # cash
-    cfont = get_font(22, bold=True)
-    draw.text((120, 110), f"${fmt(cash)}", fill=GREEN, font=cfont)
+    # subheader: rank position
+    rfont = get_font(13 * SCALE)
+    draw.text((PAD + 80 * SCALE, PAD + 68 * SCALE), f"Rank {rank} of {total}", fill="#778899", font=rfont)
 
-    # rank text
-    rfont = get_font(14)
-    draw.text((120, 148), f"Rank {rank} of {total}", fill="#8899aa", font=rfont)
+    # divider line
+    draw.rectangle([PAD + 80 * SCALE, PAD + 92 * SCALE, W - PAD - 20 * SCALE, PAD + 94 * SCALE], fill=(40, 50, 80, 200))
+
+    # cash amount — big and green
+    draw_trophy(draw, PAD + 80 * SCALE, PAD + 104 * SCALE, size=20 * SCALE)
+    cfont = get_font(28 * SCALE, bold=True)
+    draw.text((PAD + 108 * SCALE, PAD + 100 * SCALE), f"${fmt(cash)}", fill=GREEN, font=cfont)
 
     # progress bar
-    BAR_X1, BAR_X2 = 120, W - 50
-    BAR_Y1, BAR_Y2 = 185, 205
-    draw_rounded_rect(draw, (BAR_X1, BAR_Y1, BAR_X2, BAR_Y2), 8, fill=(40, 40, 70, 255))
-    progress  = 1 - ((rank - 1) / max(total - 1, 1))
-    fill_w    = int((BAR_X2 - BAR_X1) * max(progress, 0.03))
-    # gradient fill
+    BX1 = PAD + 80 * SCALE
+    BX2 = W - PAD - 20 * SCALE
+    BY1 = H - PAD - 52 * SCALE
+    BY2 = H - PAD - 32 * SCALE
+    draw_rounded_rect(draw, (BX1, BY1, BX2, BY2), 8 * SCALE, fill=(30, 35, 65, 255))
+    progress = 1 - ((rank - 1) / max(total - 1, 1))
+    fill_w   = int((BX2 - BX1) * max(progress, 0.03))
     for px in range(fill_w):
-        t   = px / max(fill_w - 1, 1)
-        r_  = int(99  + (74  - 99)  * t)
-        g_  = int(179 + (222 - 179) * t)
-        b_  = int(237 + (128 - 237) * t)
-        draw.rectangle([BAR_X1 + px, BAR_Y1 + 2, BAR_X1 + px + 1, BAR_Y2 - 2], fill=(r_, g_, b_, 230))
+        t  = px / max(fill_w - 1, 1)
+        r_ = int(99  + (74  - 99)  * t)
+        g_ = int(179 + (222 - 179) * t)
+        b_ = int(237 + (128 - 237) * t)
+        draw.rectangle([BX1 + px, BY1 + SCALE, BX1 + px + 1, BY2 - SCALE], fill=(r_, g_, b_, 220))
 
-    draw.text((BAR_X1, BAR_Y2 + 6), "Lowest", fill="#445566", font=get_font(11))
-    draw.text((BAR_X2 - 30, BAR_Y2 + 6), "Top", fill="#445566", font=get_font(11))
+    lf = get_font(11 * SCALE)
+    draw.text((BX1, BY2 + 4 * SCALE), "Lowest", fill="#445566", font=lf)
+    draw.text((BX2 - 36 * SCALE, BY2 + 4 * SCALE), "Top", fill="#445566", font=lf)
+
+    # downscale for anti-alias smoothness
+    img = img.resize((W // SCALE, H // SCALE), Image.LANCZOS)
 
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -470,7 +485,7 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["🏆 *Top 3*\n"]
     for i, (_, u) in enumerate(members):
-        lines.append(f"{rank_emoji(i+1)} *{u['name']}* — {CURRENCY} {fmt(u['cash'])}")
+        lines.append(f"{rank_emoji(i+1)} *{u['name']}* — ${fmt(u['cash'])}")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 # ─────────────────────────────────────────
