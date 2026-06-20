@@ -1,7 +1,8 @@
 import os
 import json
+import time
 import asyncio
-import math
+from functools import lru_cache
 from datetime import datetime
 from io import BytesIO
 
@@ -10,28 +11,54 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes, CallbackQueryHandler
 )
 from telegram.constants import ParseMode
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 # ─────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "8805361777:AAHGWv_lymVdm7U9dR4rWAoPs4tK4NPsFRo")
-DATA_FILE  = "data.json"
+DATA_FILE  = os.getenv("DATA_FILE", "data.json")   # point at a mounted volume in prod
 CURRENCY   = "💰"
+
+# ── In-memory state (loaded once at startup) + concurrency guards ──
+DATA: dict        = {"users": {}}
+DATA_LOCK         = asyncio.Lock()        # serialize read-modify-write on DATA
+RENDER_SEM        = asyncio.Semaphore(1)  # one PIL render at a time, off the loop
+
+# Avatar cache:  uid -> (fetched_at_epoch, png_bytes | None)
+AVATAR_CACHE: dict[int, tuple] = {}
+AVATAR_TTL = 3600  # seconds
 
 # ─────────────────────────────────────────
 #  DATA LAYER
 # ─────────────────────────────────────────
 
-def load_data() -> dict:
+def init_data():
+    """Load data.json from disk once, into the shared in-memory DATA dict."""
+    global DATA
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
-    return {"users": {}}
+        try:
+            with open(DATA_FILE, encoding="utf-8") as f:
+                DATA = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"WARNING: could not read {DATA_FILE} ({e}); starting empty.")
+            DATA = {"users": {}}
+    DATA.setdefault("users", {})
 
-def save_data(data: dict):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def load_data() -> dict:
+    """Return the shared in-memory store (no disk read)."""
+    return DATA
+
+def save_data(data: dict | None = None):
+    """Atomically persist DATA: write a temp file, then os.replace it in."""
+    d = DATA if data is None else data
+    directory = os.path.dirname(DATA_FILE)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp = f"{DATA_FILE}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, DATA_FILE)   # atomic on the same filesystem
 
 def get_user(data: dict, uid: int, name: str = "") -> dict:
     key = str(uid)
@@ -106,46 +133,120 @@ async def resolve_target(update, context, args):
 #  DRAWING HELPERS
 # ─────────────────────────────────────────
 
+# Warm near-black background + panel gradients
+BG_TOP, BG_BOT       = (22, 19, 14), (7, 6, 5)
+PANEL_TOP, PANEL_BOT = (32, 28, 20), (15, 13, 9)
+INK   = (245, 239, 225)   # warm white  (names / headings)
+MUTE  = (151, 133, 92)    # muted tan   (subtitles / labels)
+HAIR  = (198, 162, 86)    # gold hairline
+
+# Metallic gradients, expressed as (light, mid, deep)
+GOLD_M    = ((255, 233, 153), (240, 193, 66), (150, 105, 27))
+SILVER_M  = ((238, 240, 246), (190, 194, 202), (98, 102, 112))
+BRONZE_M  = ((237, 178, 122), (193, 121, 66), (110, 67, 34))
+GOLDDIM_M = ((205, 176, 110), (150, 122, 60), (92, 72, 30))
+
+def rank_metal(rank):
+    return {1: GOLD_M, 2: SILVER_M, 3: BRONZE_M}.get(rank, GOLDDIM_M)
+
 def hex_to_rgb(h: str) -> tuple:
     h = h.lstrip("#")
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-def draw_rounded_rect(draw, xy, radius, fill, border=None, border_width=2):
-    x1, y1, x2, y2 = xy
-    r = radius
-    draw.rectangle([x1 + r, y1, x2 - r, y2], fill=fill)
-    draw.rectangle([x1, y1 + r, x2, y2 - r], fill=fill)
-    draw.ellipse([x1, y1, x1 + 2*r, y1 + 2*r], fill=fill)
-    draw.ellipse([x2 - 2*r, y1, x2, y1 + 2*r], fill=fill)
-    draw.ellipse([x1, y2 - 2*r, x1 + 2*r, y2], fill=fill)
-    draw.ellipse([x2 - 2*r, y2 - 2*r, x2, y2], fill=fill)
-    if border:
-        for i in range(border_width):
-            draw.arc([x1+i, y1+i, x1+2*r-i, y1+2*r-i], 180, 270, fill=border)
-            draw.arc([x2-2*r+i, y1+i, x2-i, y1+2*r-i], 270, 360, fill=border)
-            draw.arc([x1+i, y2-2*r+i, x1+2*r-i, y2-i], 90, 180, fill=border)
-            draw.arc([x2-2*r+i, y2-2*r+i, x2-i, y2-i], 0, 90, fill=border)
-            draw.line([x1+r, y1+i, x2-r, y1+i], fill=border)
-            draw.line([x1+r, y2-i, x2-r, y2-i], fill=border)
-            draw.line([x1+i, y1+r, x1+i, y2-r], fill=border)
-            draw.line([x2-i, y1+r, x2-i, y2-r], fill=border)
+def composite_at(base, overlay, x, y):
+    """Alpha-composite `overlay` onto `base` at (x, y); clips off-canvas/negative
+    coords (so blurred shadows that bleed past the edge just work)."""
+    x, y   = int(round(x)), int(round(y))
+    bw, bh = base.size
+    ow, oh = overlay.size
+    cx0, cy0 = max(0, -x), max(0, -y)
+    cx1, cy1 = min(ow, bw - x), min(oh, bh - y)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return
+    region = overlay.crop((cx0, cy0, cx1, cy1)) if (cx0, cy0, cx1, cy1) != (0, 0, ow, oh) else overlay
+    base.alpha_composite(region, (x + cx0, y + cy0))
 
-def draw_noise_bg(img, base_color, amount=18):
-    import random
-    px = img.load()
-    w, h = img.size
-    r0, g0, b0 = base_color
-    for _ in range(w * h // amount):
-        x = random.randint(0, w - 1)
-        y = random.randint(0, h - 1)
-        v = random.randint(-12, 12)
-        r = max(0, min(255, r0 + v))
-        g = max(0, min(255, g0 + v))
-        b = max(0, min(255, b0 + v))
-        px[x, y] = (r, g, b, 255)
+def paste_center(base, overlay, cx, cy):
+    composite_at(base, overlay, cx - overlay.width / 2, cy - overlay.height / 2)
 
+def vgradient(size, top, bottom):
+    """Vertical 2-stop RGB gradient (1px column stretched to width)."""
+    w, h = size
+    col, px = Image.new("RGB", (1, h)), None
+    px = col.load()
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        px[0, y] = (int(top[0] + (bottom[0]-top[0])*t),
+                    int(top[1] + (bottom[1]-top[1])*t),
+                    int(top[2] + (bottom[2]-top[2])*t))
+    return col.resize((w, h))
+
+def metal_gradient(size, metal):
+    """Vertical metallic sheen: light → mid (bright band ~45%) → deep."""
+    light, mid, deep = metal
+    w, h = size
+    col = Image.new("RGB", (1, h))
+    px  = col.load()
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        if t < 0.45:
+            tt, a, b = t / 0.45, light, mid
+        else:
+            tt, a, b = (t - 0.45) / 0.55, mid, deep
+        px[0, y] = (int(a[0]+(b[0]-a[0])*tt), int(a[1]+(b[1]-a[1])*tt), int(a[2]+(b[2]-a[2])*tt))
+    return col.resize((w, h))
+
+def rounded_mask(size, radius):
+    m = Image.new("L", size, 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, size[0]-1, size[1]-1], radius=radius, fill=255)
+    return m
+
+def gradient_panel(size, radius, top, bottom):
+    g = vgradient(size, top, bottom).convert("RGBA")
+    g.putalpha(rounded_mask(size, radius))
+    return g
+
+def soft_shadow(size, radius, blur, opacity=150, color=(0, 0, 0)):
+    """Return (rgba_shadow, pad). Composite it at (x - pad, y - pad + dy)."""
+    pad   = blur * 3
+    shape = Image.new("L", size, 0)
+    ImageDraw.Draw(shape).rounded_rectangle([0, 0, size[0]-1, size[1]-1], radius=radius, fill=opacity)
+    full  = Image.new("L", (size[0] + 2*pad, size[1] + 2*pad), 0)
+    full.paste(shape, (pad, pad))
+    layer = Image.composite(Image.new("RGBA", full.size, (*color, 255)),
+                            Image.new("RGBA", full.size, (*color, 0)), full)
+    return layer.filter(ImageFilter.GaussianBlur(blur)), pad
+
+def text_size(font, text):
+    b = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, 0), text, font=font)
+    return b[2]-b[0], b[3]-b[1], b
+
+def fit_text(text, font, maxw):
+    if text_size(font, text)[0] <= maxw:
+        return text
+    while text and text_size(font, text + "…")[0] > maxw:
+        text = text[:-1]
+    return (text + "…") if text else "…"
+
+def gradient_text_img(text, font, metal):
+    """RGBA image of `text` filled with a metallic vertical gradient."""
+    tw, th, b = text_size(font, text)
+    pad  = max(2, th // 6)
+    size = (max(1, tw + 2*pad), max(1, th + 2*pad))
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).text((pad - b[0], pad - b[1]), text, font=font, fill=255)
+    grad = metal_gradient(size, metal).convert("RGBA")
+    grad.putalpha(mask)
+    return grad
+
+def draw_text_shadow(base, xy, text, font, fill, off=2, shadow=(0, 0, 0, 150)):
+    d = ImageDraw.Draw(base)
+    d.text((xy[0]+off, xy[1]+off), text, font=font, fill=shadow)
+    d.text(xy, text, font=font, fill=fill)
+
+@lru_cache(maxsize=None)
 def get_font(size, bold=False):
-    # Try to load a system font, fall back to default
+    # Cached: the same (size, bold) reuses one font object instead of re-reading disk.
     candidates_bold = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
@@ -161,218 +262,276 @@ def get_font(size, bold=False):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-def draw_medal(draw, cx, cy, rank, r=22):
-    """Draw a circular medal badge."""
-    colors = {1: ("#FFB800", "#7A5500"), 2: ("#A8A8A8", "#4A4A4A"), 3: ("#CD7F32", "#6B3A1F")}
-    fill, shadow = colors.get(rank, ("#2A2A4A", "#111128"))
-    # shadow
-    draw.ellipse([cx - r + 2, cy - r + 2, cx + r + 2, cy + r + 2], fill=shadow)
-    # circle
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
-    # number
-    font = get_font(18, bold=True)
-    txt = str(rank)
-    bbox = draw.textbbox((0, 0), txt, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((cx - tw // 2, cy - th // 2 - 1), txt, fill="#ffffff", font=font)
+def metal_badge(base, cx, cy, r, metal, label, label_fill=(38, 26, 8, 255), glow=False):
+    """Circular metallic badge: gradient fill, rim, top highlight, centered label."""
+    d = int(2 * r)
+    if glow:
+        g, pad = soft_shadow((d, d), r, blur=max(3, r // 2), opacity=180, color=metal[1])
+        composite_at(base, g, cx - d/2 - pad, cy - d/2 - pad)
+    grad = metal_gradient((d, d), metal).convert("RGBA")
+    grad.putalpha(rounded_mask((d, d), r))
+    composite_at(base, grad, cx - r, cy - r)
+    dr = ImageDraw.Draw(base)
+    dr.ellipse([cx-r, cy-r, cx+r-1, cy+r-1], outline=(255, 240, 205, 150), width=max(1, int(r//12)))
+    dr.arc([cx-r+r//6, cy-r+r//6, cx+r-r//6, cy+r-r//6], 198, 342,
+           fill=(255, 255, 255, 120), width=max(1, int(r//9)))
+    font = get_font(max(9, int(r)), bold=True)
+    tw, th, b = text_size(font, label)
+    dr.text((cx - tw/2 - b[0], cy - th/2 - b[1]), label, font=font, fill=label_fill)
 
-def draw_crown_badge(draw, cx, cy, r=22):
-    """Draw a crown badge for admins."""
-    draw.ellipse([cx - r + 2, cy - r + 2, cx + r + 2, cy + r + 2], fill="#5A4000")
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FFB800")
-    font = get_font(18, bold=True)
-    bbox = draw.textbbox((0, 0), "👑", font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((cx - tw // 2, cy - th // 2 - 1), "♛", fill="#ffffff", font=font)
+def crown_img(w, metal):
+    """A metallic 3-point crown (drawn, not a font glyph) as an RGBA image."""
+    h    = max(8, int(w * 0.82))
+    mask = Image.new("L", (w, h), 0)
+    d    = ImageDraw.Draw(mask)
+    pts  = [(0.06*w, 0.80*h), (0.06*w, 0.34*h), (0.27*w, 0.54*h), (0.50*w, 0.16*h),
+            (0.73*w, 0.54*h), (0.94*w, 0.34*h), (0.94*w, 0.80*h)]
+    d.polygon([(int(x), int(y)) for x, y in pts], fill=255)
+    d.rectangle([int(0.06*w), int(0.70*h), int(0.94*w), int(0.84*h)], fill=255)
+    for fx, fy in ((0.06, 0.34), (0.50, 0.16), (0.94, 0.34)):
+        r = max(2, int(0.06*w))
+        d.ellipse([int(fx*w)-r, int(fy*h)-r, int(fx*w)+r, int(fy*h)+r], fill=255)
+    grad = metal_gradient((w, h), metal).convert("RGBA")
+    grad.putalpha(mask)
+    return grad
 
-def draw_trophy(draw, x, y, size=28):
-    """Simple trophy shape drawn with PIL."""
-    c = "#FFB800"
-    # cup body
-    draw.ellipse([x, y, x + size, y + int(size * 0.8)], fill=c)
-    draw.rectangle([x + int(size * 0.1), y + int(size * 0.35), x + int(size * 0.9), y + int(size * 0.65)], fill=c)
-    # stem
-    sw = int(size * 0.18)
-    draw.rectangle([x + size // 2 - sw, y + int(size * 0.65), x + size // 2 + sw, y + int(size * 0.9)], fill=c)
-    # base
-    draw.rectangle([x + int(size * 0.1), y + int(size * 0.88), x + int(size * 0.9), y + size], fill=c)
-    # handles
-    hw = int(size * 0.15)
-    draw.arc([x - hw, y + int(size * 0.1), x + hw, y + int(size * 0.55)], 270, 90, fill=c, width=3)
-    draw.arc([x + size - hw, y + int(size * 0.1), x + size + hw, y + int(size * 0.55)], 90, 270, fill=c, width=3)
+def diamond_img(s, metal):
+    """A small metallic diamond (rotated square) as an RGBA image."""
+    mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(mask).polygon([(s/2, 0), (s, s/2), (s/2, s), (0, s/2)], fill=255)
+    g = metal_gradient((s, s), metal).convert("RGBA")
+    g.putalpha(mask)
+    return g
+
+# ─────────────────────────────────────────
+#  AVATAR HELPERS
+# ─────────────────────────────────────────
+
+async def fetch_avatar_bytes(bot, uid: int) -> bytes | None:
+    """Download a user's current profile photo (largest size). Cached for AVATAR_TTL.
+    Returns None on privacy restrictions / no photo / any error — callers fall back."""
+    now    = time.time()
+    cached = AVATAR_CACHE.get(uid)
+    if cached and now - cached[0] < AVATAR_TTL:
+        return cached[1]
+    raw = None
+    try:
+        photos = await bot.get_user_profile_photos(uid, limit=1)
+        if photos.total_count and photos.photos:
+            largest = photos.photos[0][-1]            # biggest PhotoSize of the first photo
+            f       = await bot.get_file(largest.file_id)
+            raw     = bytes(await f.download_as_bytearray())
+    except Exception:
+        raw = None
+    AVATAR_CACHE[uid] = (now, raw)
+    return raw
+
+def make_circular_avatar(raw: bytes, size: int) -> Image.Image:
+    """Crop image bytes into a circular RGBA avatar of the given diameter."""
+    av   = Image.open(BytesIO(raw)).convert("RGBA")
+    av   = ImageOps.fit(av, (size, size), Image.LANCZOS)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, size - 1, size - 1], fill=255)
+    av.putalpha(mask)
+    return av
+
+def make_initials_avatar(name: str, uid, size: int) -> Image.Image:
+    """Charcoal disc with a gold-gradient initial — fallback when no photo exists."""
+    av = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(av).ellipse([0, 0, size - 1, size - 1], fill=(30, 27, 20, 255))
+    letter = (name.lstrip("@")[:1] or "?").upper()
+    g = gradient_text_img(letter, get_font(int(size * 0.52), bold=True), GOLD_M)
+    paste_center(av, g, size / 2, size / 2)
+    return av
+
+def avatar_image(raw, name, uid, size: int) -> Image.Image:
+    """Circular photo if bytes are present, else an initials avatar. Never raises."""
+    if raw:
+        try:
+            return make_circular_avatar(raw, size)
+        except Exception:
+            pass
+    return make_initials_avatar(name, uid, size)
+
+def place_avatar(base, raw, name, uid, cx, cy, d, metal, glow=False):
+    """Composite a circular avatar at (cx, cy) inside a metallic ring (+ optional glow)."""
+    ring_w = max(3, d // 14)
+    outer  = d + ring_w * 2
+    if glow:
+        g, pad = soft_shadow((outer, outer), outer // 2, blur=max(5, d // 10), opacity=85, color=metal[1])
+        composite_at(base, g, cx - outer/2 - pad, cy - outer/2 - pad)
+    ring  = metal_gradient((outer, outer), metal).convert("RGBA")
+    rmask = Image.new("L", (outer, outer), 0)
+    md    = ImageDraw.Draw(rmask)
+    md.ellipse([0, 0, outer-1, outer-1], fill=255)
+    md.ellipse([ring_w, ring_w, outer-1-ring_w, outer-1-ring_w], fill=0)
+    ring.putalpha(rmask)
+    composite_at(base, ring, cx - outer/2, cy - outer/2)
+    composite_at(base, avatar_image(raw, name, uid, d), cx - d/2, cy - d/2)
 
 # ─────────────────────────────────────────
 #  RANK CARD IMAGE  (/myrank)
 # ─────────────────────────────────────────
 
-def make_rank_card(username: str, cash: int, rank: int, total: int) -> BytesIO:
-    # 2x resolution for crisp output
-    SCALE   = 2
-    W, H    = 720 * SCALE, 280 * SCALE
-    BG      = (10, 12, 26)
-    CARD_BG = (18, 20, 42)
-    ACCENT  = (99, 179, 237)
-    GREEN   = (74, 222, 128)
-    GOLD    = (255, 184, 0)
+def make_rank_card(username: str, cash: int, rank: int, total: int,
+                   avatar_raw: bytes | None = None, uid=0) -> BytesIO:
+    S      = 2                          # supersample, downscaled at the end
+    W, H   = 720 * S, 280 * S
+    metal  = rank_metal(rank)
 
-    img  = Image.new("RGBA", (W, H), (*BG, 255))
+    img = vgradient((W, H), BG_TOP, BG_BOT).convert("RGBA")
+
+    # outer panel: drop shadow + gradient fill + gold hairline
+    m      = 18 * S
+    pw, ph = W - 2*m, H - 2*m
+    rad    = 26 * S
+    sh, pad = soft_shadow((pw, ph), rad, blur=9*S, opacity=140)
+    composite_at(img, sh, m - pad, m - pad + 4*S)
+    composite_at(img, gradient_panel((pw, ph), rad, PANEL_TOP, PANEL_BOT), m, m)
     draw = ImageDraw.Draw(img)
-    draw_noise_bg(img, BG, amount=30)
+    draw.rounded_rectangle([m, m, m+pw-1, m+ph-1], radius=rad, outline=(*HAIR, 110), width=max(1, S))
 
-    PAD = 20 * SCALE
-    # outer card
-    draw_rounded_rect(draw, (PAD, PAD, W - PAD, H - PAD), 18 * SCALE,
-                      fill=(*CARD_BG, 255), border=(*ACCENT, 80), border_width=2 * SCALE)
+    # metallic accent bar (left)
+    bar = metal_gradient((6*S, ph - 28*S), metal).convert("RGBA")
+    bar.putalpha(rounded_mask(bar.size, 3*S))
+    composite_at(img, bar, m + 14*S, m + 14*S)
 
-    # left accent bar
-    bar_color = GOLD if rank == 1 else ((168,168,168) if rank == 2 else ((205,127,50) if rank == 3 else ACCENT))
-    draw.rectangle([PAD, PAD, PAD + 6 * SCALE, H - PAD], fill=(*bar_color, 255))
+    # avatar + corner rank badge
+    av_d  = 108 * S
+    av_cx = m + 34*S + av_d // 2
+    av_cy = H // 2
+    place_avatar(img, avatar_raw, username, uid, av_cx, av_cy, av_d, metal, glow=(rank == 1))
+    br = 18 * S
+    metal_badge(img, av_cx + av_d//2 - br, av_cy + av_d//2 - br, br, metal, str(rank))
 
-    # medal badge
-    draw_medal(draw, PAD + 44 * SCALE, H // 2, rank, r=22 * SCALE)
+    # text column
+    tx = av_cx + av_d//2 + 30*S
+    pr = W - m - 24*S
 
-    # header: username
-    ufont = get_font(26 * SCALE, bold=True)
-    draw.text((PAD + 80 * SCALE, PAD + 28 * SCALE), username[:26], fill="#ffffff", font=ufont)
+    nfont = get_font(30*S, bold=True)
+    draw_text_shadow(img, (tx, m + 22*S), fit_text(username[:26], nfont, pr - tx), nfont, INK, off=2*S)
 
-    # subheader: rank position
-    rfont = get_font(13 * SCALE)
-    draw.text((PAD + 80 * SCALE, PAD + 68 * SCALE), f"Rank {rank} of {total}", fill="#778899", font=rfont)
+    draw.text((tx, m + 70*S), f"RANK {rank} OF {total}", fill=MUTE, font=get_font(13*S, bold=True))
+    draw.line([tx, m + 100*S, pr, m + 100*S], fill=(*HAIR, 70), width=max(1, S))
 
-    # divider line
-    draw.rectangle([PAD + 80 * SCALE, PAD + 92 * SCALE, W - PAD - 20 * SCALE, PAD + 94 * SCALE], fill=(40, 50, 80, 200))
+    # cash — gold gradient with a diamond marker
+    gnum    = gradient_text_img(f"${fmt(cash)}", get_font(34*S, bold=True), GOLD_M)
+    diamond = diamond_img(20*S, GOLD_M)
+    cash_y  = m + 116*S
+    composite_at(img, diamond, tx, cash_y + (gnum.height - diamond.height)//2)
+    composite_at(img, gnum, tx + diamond.width + 12*S, cash_y)
 
-    # cash amount — big and green
-    draw_trophy(draw, PAD + 80 * SCALE, PAD + 104 * SCALE, size=20 * SCALE)
-    cfont = get_font(28 * SCALE, bold=True)
-    draw.text((PAD + 108 * SCALE, PAD + 100 * SCALE), f"${fmt(cash)}", fill=GREEN, font=cfont)
-
-    # progress bar
-    BX1 = PAD + 80 * SCALE
-    BX2 = W - PAD - 20 * SCALE
-    BY1 = H - PAD - 52 * SCALE
-    BY2 = H - PAD - 32 * SCALE
-    draw_rounded_rect(draw, (BX1, BY1, BX2, BY2), 8 * SCALE, fill=(30, 35, 65, 255))
+    # progress bar — position within the board
+    bx1, bx2 = tx, pr
+    by1, by2 = H - m - 50*S, H - m - 30*S
+    barh     = by2 - by1
+    draw.rounded_rectangle([bx1, by1, bx2, by2], radius=barh//2, fill=(44, 39, 28, 255))
     progress = 1 - ((rank - 1) / max(total - 1, 1))
-    fill_w   = int((BX2 - BX1) * max(progress, 0.03))
-    for px in range(fill_w):
-        t  = px / max(fill_w - 1, 1)
-        r_ = int(99  + (74  - 99)  * t)
-        g_ = int(179 + (222 - 179) * t)
-        b_ = int(237 + (128 - 237) * t)
-        draw.rectangle([BX1 + px, BY1 + SCALE, BX1 + px + 1, BY2 - SCALE], fill=(r_, g_, b_, 220))
+    fillw    = int((bx2 - bx1) * max(progress, 0.05))
+    if fillw >= barh:
+        fb = metal_gradient((fillw, barh), GOLD_M).convert("RGBA")
+        fb.putalpha(rounded_mask((fillw, barh), barh//2))
+        composite_at(img, fb, bx1, by1)
+    lf = get_font(11*S, bold=True)
+    draw.text((bx1, by2 + 5*S), "LOWEST", fill=MUTE, font=lf)
+    tw, _, _ = text_size(lf, "TOP")
+    draw.text((bx2 - tw, by2 + 5*S), "TOP", fill=MUTE, font=lf)
 
-    lf = get_font(11 * SCALE)
-    draw.text((BX1, BY2 + 4 * SCALE), "Lowest", fill="#445566", font=lf)
-    draw.text((BX2 - 36 * SCALE, BY2 + 4 * SCALE), "Top", fill="#445566", font=lf)
-
-    # downscale for anti-alias smoothness
-    img = img.resize((W // SCALE, H // SCALE), Image.LANCZOS)
-
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+    img = img.convert("RGB").resize((W // S, H // S), Image.LANCZOS)
+    buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return buf
 
 # ─────────────────────────────────────────
 #  LEADERBOARD IMAGE  (/leaderboard)
 # ─────────────────────────────────────────
 
-def make_leaderboard_image(members: list[tuple], admin_ids: set) -> BytesIO:
-    top      = members[:15]
-    n        = len(top)
-    W        = 720
-    ROW_H    = 64
-    HEADER_H = 110
-    FOOTER_H = 60
-    H        = HEADER_H + n * ROW_H + FOOTER_H
+def make_leaderboard_image(members: list[tuple], admin_ids: set, avatars: dict | None = None) -> BytesIO:
+    S       = 2
+    top     = members[:15]
+    n       = len(top)
+    W       = 720 * S
+    HEADER  = 100 * S
+    ROW     = 72  * S
+    FOOTER  = 58  * S
+    H       = HEADER + n*ROW + FOOTER
+    mx      = 22 * S
+    avatars = avatars or {}
 
-    BG       = (10, 12, 26)
-    CARD_BG  = (18, 20, 40)
-    ROW_A    = (22, 24, 50)
-    ROW_B    = (17, 19, 42)
-    GOLD     = (255, 184, 0)
-    GREEN    = (74, 222, 128)
-    BLUE     = (99, 179, 237)
-
-    img  = Image.new("RGBA", (W, H), (*BG, 255))
+    img  = vgradient((W, H), BG_TOP, BG_BOT).convert("RGBA")
     draw = ImageDraw.Draw(img)
-    draw_noise_bg(img, BG, amount=30)
 
-    # ── header card ──
-    draw_rounded_rect(draw, (20, 14, W - 20, HEADER_H - 8), 14, fill=(*CARD_BG, 255), border=(*BLUE, 80), border_width=1)
+    # ── header ──
+    hp_h = HEADER - 22*S
+    composite_at(img, gradient_panel((W - 2*mx, hp_h), 18*S, PANEL_TOP, PANEL_BOT), mx, 12*S)
+    draw.rounded_rectangle([mx, 12*S, W-mx-1, 12*S+hp_h-1], radius=18*S, outline=(*HAIR, 110), width=max(1, S))
 
-    # trophy icon
-    draw_trophy(draw, 36, 28, size=34)
+    crown = crown_img(42*S, GOLD_M)
+    composite_at(img, crown, mx + 24*S, 30*S)
+    title_x = mx + 24*S + crown.width + 18*S
+    composite_at(img, gradient_text_img("LEADERBOARD", get_font(30*S, bold=True), GOLD_M), title_x, 24*S)
+    draw.text((title_x + 2*S, 64*S), "TOP RANKED MEMBERS", fill=MUTE, font=get_font(12*S, bold=True))
 
-    # title
-    draw.text((84, 26), "LEADERBOARD", fill=GOLD, font=get_font(24, bold=True))
-    draw.text((86, 58), "Top Ranked Users", fill="#667788", font=get_font(14))
-
-    # date top-right
     date_str = datetime.now().strftime("%d %b %Y").upper()
-    draw.text((W - 160, 38), f"📅 {date_str}", fill="#667788", font=get_font(12))
+    df = get_font(12*S, bold=True)
+    dtw, _, _ = text_size(df, date_str)
+    draw.text((W - mx - 22*S - dtw, 42*S), date_str, fill=MUTE, font=df)
 
     # ── rows ──
     for i, (uid, user) in enumerate(top):
-        y0     = HEADER_H + i * ROW_H
-        y1     = y0 + ROW_H - 2
-        is_adm = int(uid) in admin_ids
-        bg     = ROW_A if i % 2 == 0 else ROW_B
+        y0       = HEADER + i*ROW
+        ry1, ry2 = y0 + 6*S, y0 + ROW - 6*S
+        rh       = ry2 - ry1
+        cy       = (ry1 + ry2) // 2
+        is_adm   = int(uid) in admin_ids
+        metal    = rank_metal(i + 1)
 
-        draw_rounded_rect(draw, (20, y0 + 2, W - 20, y1), 10, fill=(*bg, 255))
-
-        # left accent for top 3
-        if i == 0:
-            draw.rectangle([20, y0 + 2, 25, y1], fill=(*GOLD, 255))
-        elif i == 1:
-            draw.rectangle([20, y0 + 2, 25, y1], fill=(168, 168, 168, 255))
-        elif i == 2:
-            draw.rectangle([20, y0 + 2, 25, y1], fill=(205, 127, 50, 255))
-
-        # medal / crown badge
-        cy = y0 + ROW_H // 2
-        if is_adm:
-            draw_crown_badge(draw, 62, cy, r=20)
+        # row panel
+        if i < 3:
+            tint = {0: (46, 38, 20), 1: (40, 41, 45), 2: (44, 33, 22)}[i]
+            composite_at(img, gradient_panel((W - 2*mx, rh), 14*S, tint, PANEL_BOT), mx, ry1)
+            draw.rounded_rectangle([mx, ry1, W-mx-1, ry2-1], radius=14*S, outline=(*metal[1], 160), width=max(1, S))
+            bar = metal_gradient((5*S, rh - 16*S), metal).convert("RGBA")
+            bar.putalpha(rounded_mask(bar.size, 2*S))
+            composite_at(img, bar, mx + 8*S, ry1 + 8*S)
         else:
-            draw_medal(draw, 62, cy, i + 1, r=20)
+            base = (26, 23, 17) if i % 2 == 0 else (20, 18, 13)
+            composite_at(img, gradient_panel((W - 2*mx, rh), 14*S, base, PANEL_BOT), mx, ry1)
+            draw.rounded_rectangle([mx, ry1, W-mx-1, ry2-1], radius=14*S, outline=(*HAIR, 45), width=1)
 
-        # name
-        name   = user["name"][:26]
-        ncolor = "#FFD700" if is_adm else ("#ffffff" if i < 3 else "#ccddee")
-        nfont  = get_font(16, bold=(i < 3 or is_adm))
-        draw.text((100, cy - 18), name, fill=ncolor, font=nfont)
+        # avatar + corner rank badge
+        av_d  = 50 * S
+        av_cx = mx + 26*S + av_d//2
+        place_avatar(img, avatars.get(uid), user["name"], uid, av_cx, cy, av_d, metal, glow=(i == 0))
+        br = 13 * S
+        metal_badge(img, av_cx + av_d//2 - br + 2*S, cy + av_d//2 - br + 2*S, br, metal, str(i + 1))
 
-        # trophy icon for amount
-        draw_trophy(draw, W - 200, cy - 14, size=16)
+        # name (gold + crown for admins)
+        nx    = av_cx + av_d//2 + 24*S
+        if is_adm:
+            ad_crown = crown_img(20*S, GOLD_M)
+            composite_at(img, ad_crown, nx, cy - ad_crown.height//2)
+            nx += ad_crown.width + 10*S
+        nmaxw = (W - mx - 210*S) - nx
+        nfont = get_font(17*S, bold=True)
+        ncol  = (247, 226, 150) if is_adm else INK
+        draw_text_shadow(img, (nx, cy - 13*S), fit_text(user["name"][:28], nfont, nmaxw), nfont, ncol, off=S)
 
-        # cash amount
-        cash_str = f"${fmt(user['cash'])}"
-        cfont    = get_font(16, bold=True)
-        bbox     = draw.textbbox((0, 0), cash_str, font=cfont)
-        tw       = bbox[2] - bbox[0]
-        draw.text((W - 40 - tw, cy - 10), cash_str, fill=GREEN, font=cfont)
+        # cash (right-aligned, gold gradient)
+        gimg = gradient_text_img(f"${fmt(user['cash'])}", get_font(17*S, bold=True),
+                                 GOLD_M if i < 3 else GOLDDIM_M)
+        composite_at(img, gimg, W - mx - 22*S - gimg.width, cy - gimg.height//2)
 
     # ── footer ──
-    fy = HEADER_H + n * ROW_H + 8
-    draw_rounded_rect(draw, (20, fy, W - 20, fy + FOOTER_H - 12), 10, fill=(*CARD_BG, 255))
+    fy = HEADER + n*ROW + 6*S
+    composite_at(img, gradient_panel((W - 2*mx, FOOTER - 14*S), 12*S, PANEL_TOP, PANEL_BOT), mx, fy)
+    draw.line([mx + 16*S, fy - 4*S, W - mx - 16*S, fy - 4*S], fill=(*HAIR, 60), width=1)
+    draw.text((mx + 22*S, fy + 12*S), "Keep climbing — the next rank is yours.",
+              fill=MUTE, font=get_font(12*S, bold=True))
+    wm = gradient_text_img("RANKING BOT", get_font(13*S, bold=True), GOLD_M)
+    composite_at(img, wm, W - mx - 22*S - wm.width, fy + 11*S)
 
-    # bar chart icon area
-    for bi, bh in enumerate([18, 28, 22, 14, 24]):
-        bx = 38 + bi * 10
-        draw.rectangle([bx, fy + 30 - bh, bx + 7, fy + 30], fill=(*BLUE, 180))
-
-    draw.text((100, fy + 10), "Keep climbing.", fill="#aabbcc", font=get_font(13, bold=True))
-    draw.text((100, fy + 28), "The next rank is yours.", fill="#556677", font=get_font(11))
-
-    rbot = "RANKING BOT"
-    rfont = get_font(13, bold=True)
-    rb_bbox = draw.textbbox((0, 0), rbot, font=rfont)
-    draw.text((W - 40 - (rb_bbox[2] - rb_bbox[0]), fy + 18), rbot, fill=(*BLUE, 200), font=rfont)
-
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+    img = img.convert("RGB").resize((W // S, H // S), Image.LANCZOS)
+    buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return buf
 
 # ─────────────────────────────────────────
@@ -406,7 +565,12 @@ async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_ids = {a.user.id for a in admins}
     members   = sorted_members(data)
 
-    img_buf = make_leaderboard_image(members, admin_ids)
+    top     = members[:15]
+    raws    = await asyncio.gather(*(fetch_avatar_bytes(context.bot, int(uid)) for uid, _ in top))
+    avatars = {uid: raw for (uid, _), raw in zip(top, raws)}
+
+    async with RENDER_SEM:
+        img_buf = await asyncio.to_thread(make_leaderboard_image, members, admin_ids, avatars)
     await update.message.reply_photo(
         photo=img_buf,
         caption=f"🏆 *Leaderboard* — {len(members)} members",
@@ -427,7 +591,11 @@ async def cmd_myrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank    = next(i + 1 for i, (uid, _) in enumerate(members) if uid == uid_str)
     total   = len(members)
 
-    img_buf = make_rank_card(display_name(user), udata["cash"], rank, total)
+    avatar = await fetch_avatar_bytes(context.bot, user.id)
+    async with RENDER_SEM:
+        img_buf = await asyncio.to_thread(
+            make_rank_card, display_name(user), udata["cash"], rank, total, avatar, user.id
+        )
     await update.message.reply_photo(
         photo=img_buf,
         caption=f"*{display_name(user)}* — {rank_emoji(rank)} Rank {rank} of {total}  |  {CURRENCY} {fmt(udata['cash'])}",
@@ -469,7 +637,11 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank    = next(i + 1 for i, (uid, _) in enumerate(members) if uid == uid_str)
     total   = len(members)
 
-    img_buf = make_rank_card(name, udata["cash"], rank, total)
+    avatar = await fetch_avatar_bytes(context.bot, int(uid_str))
+    async with RENDER_SEM:
+        img_buf = await asyncio.to_thread(
+            make_rank_card, name, udata["cash"], rank, total, avatar, int(uid_str)
+        )
     await update.message.reply_photo(
         photo=img_buf,
         caption=f"*{name}* — {rank_emoji(rank)} Rank {rank} of {total}  |  ${fmt(udata['cash'])}",
@@ -506,12 +678,13 @@ async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid == -1:
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
-    data  = load_data()
-    udata = get_user(data, uid, name)
-    udata["cash"] = amount
-    save_data(data)
-    members = sorted_members(data)
-    rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
+    async with DATA_LOCK:
+        data  = load_data()
+        udata = get_user(data, uid, name)
+        udata["cash"] = amount
+        save_data(data)
+        members = sorted_members(data)
+        rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ *{name}* set to *${fmt(amount)}*  —  now rank #{rank}",
         parse_mode=ParseMode.MARKDOWN
@@ -531,12 +704,13 @@ async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid == -1:
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
-    data  = load_data()
-    udata = get_user(data, uid, name)
-    udata["cash"] += amount
-    save_data(data)
-    members = sorted_members(data)
-    rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
+    async with DATA_LOCK:
+        data  = load_data()
+        udata = get_user(data, uid, name)
+        udata["cash"] += amount
+        save_data(data)
+        members = sorted_members(data)
+        rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ Added *${fmt(amount)}* to *{name}*\nNew total: *${fmt(udata['cash'])}*  —  rank #{rank}",
         parse_mode=ParseMode.MARKDOWN
@@ -556,12 +730,13 @@ async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid == -1:
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
-    data  = load_data()
-    udata = get_user(data, uid, name)
-    udata["cash"] = max(0, udata["cash"] - amount)
-    save_data(data)
-    members = sorted_members(data)
-    rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
+    async with DATA_LOCK:
+        data  = load_data()
+        udata = get_user(data, uid, name)
+        udata["cash"] = max(0, udata["cash"] - amount)
+        save_data(data)
+        members = sorted_members(data)
+        rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ Removed *${fmt(amount)}* from *{name}*\nNew total: *${fmt(udata['cash'])}*  —  rank #{rank}",
         parse_mode=ParseMode.MARKDOWN
@@ -592,10 +767,11 @@ async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Usage: `/resetmember @username`  or reply to their message + `/resetmember`", parse_mode=ParseMode.MARKDOWN)
         return
-    data = load_data()
-    if target_user in data["users"]:
-        data["users"][target_user]["cash"] = 0
-        save_data(data)
+    async with DATA_LOCK:
+        data = load_data()
+        if target_user in data["users"]:
+            data["users"][target_user]["cash"] = 0
+            save_data(data)
     await update.message.reply_text(
         f"✅ *{target_name}* has been reset to $0.",
         parse_mode=ParseMode.MARKDOWN
@@ -622,7 +798,9 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Admins only.")
         return
     if query.data == "reset_confirm":
-        save_data({"users": {}})
+        async with DATA_LOCK:
+            DATA["users"].clear()
+            save_data()
         await query.edit_message_text("🗑️ Leaderboard wiped.")
     else:
         await query.edit_message_text("Reset cancelled.")
@@ -632,7 +810,20 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    init_data()
+    # Generous timeouts: the route to api.telegram.org can be slow/throttled,
+    # and the default 5s connect timeout intermittently fails the TLS handshake.
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .get_updates_connect_timeout(30)
+        .get_updates_read_timeout(30)
+        .build()
+    )
 
     # public
     app.add_handler(CommandHandler("start",       cmd_start))
