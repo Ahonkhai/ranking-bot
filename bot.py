@@ -246,15 +246,18 @@ def draw_text_shadow(base, xy, text, font, fill, off=2, shadow=(0, 0, 0, 150)):
     d.text((xy[0]+off, xy[1]+off), text, font=font, fill=shadow)
     d.text(xy, text, font=font, fill=fill)
 
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+
 @lru_cache(maxsize=None)
 def get_font(size, bold=False):
-    # Cached: the same (size, bold) reuses one font object instead of re-reading disk.
     candidates_bold = [
+        os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
     ]
     candidates = [
+        os.path.join(_FONT_DIR, "DejaVuSans.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "C:/Windows/Fonts/arial.ttf",
