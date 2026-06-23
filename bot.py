@@ -16,7 +16,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 # ─────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "8805361777:AAHGWv_lymVdm7U9dR4rWAoPs4tK4NPsFRo")
+BOT_TOKEN  = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is not set")
 DATA_FILE  = os.getenv("DATA_FILE", "data.json")   # point at a mounted volume in prod
 CURRENCY   = "💰"
 
