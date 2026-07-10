@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import string
+import secrets
 import asyncio
 from functools import lru_cache
 from datetime import datetime
@@ -24,10 +26,18 @@ CURRENCY   = "💰"
 
 # ── In-memory state (loaded once at startup) + concurrency guards ──
 # Data is scoped per chat, so every group the bot is in has its own independent
-# board:  {"chats": {"<chat_id>": {"users": {"<uid>": {"name", "cash"}}}}}
-DATA: dict        = {"chats": {}}
+# board. Groups can also be *linked* so a public "display" group mirrors the
+# board of a private "control" group (edit in one, show in the other):
+#   {"chats": {"<chat_id>": {"users": {"<uid>": {"name", "cash"}}}},
+#    "links": {"<display_chat_id>": "<control_chat_id>"}}
+DATA: dict        = {"chats": {}, "links": {}}
 DATA_LOCK         = asyncio.Lock()        # serialize read-modify-write on DATA
 RENDER_SEM        = asyncio.Semaphore(1)  # one PIL render at a time, off the loop
+
+# Transient pairing codes for /link:  code -> (source_chat_id_str, expiry_epoch)
+PAIR_CODES: dict[str, tuple] = {}
+PAIR_TTL   = 600  # seconds a /link code stays valid
+PAIR_ALPHA = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no ambiguous I/L/O/0/1
 
 # Avatar cache:  uid -> (fetched_at_epoch, png_bytes | None)
 AVATAR_CACHE: dict[int, tuple] = {}
@@ -58,9 +68,10 @@ def _migrate(raw: dict) -> dict:
     if isinstance(raw.get("chats"), dict):
         for bucket in raw["chats"].values():
             bucket.setdefault("users", {})
+        raw.setdefault("links", {})
         return raw
 
-    data = {"chats": {}}
+    data = {"chats": {}, "links": {}}
     legacy_users = raw.get("users")
     if legacy_users:
         legacy_chat = os.getenv("LEGACY_CHAT_ID")
@@ -76,9 +87,25 @@ def load_data() -> dict:
     """Return the shared in-memory store (no disk read)."""
     return DATA
 
+def board_id(data: dict, chat_id) -> str:
+    """Resolve which board a chat reads/writes. A linked (display) group points
+    at its control group's board; every other group uses its own id."""
+    key = str(chat_id)
+    return data.get("links", {}).get(key, key)
+
+def is_follower(data: dict, chat_id) -> bool:
+    """True if this chat mirrors another group's board (display-only)."""
+    return str(chat_id) in data.get("links", {})
+
+def has_followers(data: dict, chat_id) -> bool:
+    """True if any display group is linked to this chat's board."""
+    key = str(chat_id)
+    return any(src == key for src in data.get("links", {}).values())
+
 def chat_users(data: dict, chat_id) -> dict:
-    """Return the per-chat users map for chat_id, creating it if needed."""
-    bucket = data["chats"].setdefault(str(chat_id), {"users": {}})
+    """Return the users map for the board this chat resolves to, creating it if
+    needed. Linked display groups transparently share their source's board."""
+    bucket = data["chats"].setdefault(board_id(data, chat_id), {"users": {}})
     bucket.setdefault("users", {})
     return bucket["users"]
 
@@ -118,6 +145,18 @@ async def require_group(update: Update) -> bool:
     if update.effective_chat.type in ("group", "supergroup"):
         return True
     await update.message.reply_text("👥 Add me to a group and run this there — each group keeps its own board.")
+    return False
+
+async def reject_if_follower(update: Update) -> bool:
+    """Block editing commands in a display-only (linked) group, so rankings are
+    only ever changed from the control group. Returns True if it blocked."""
+    if is_follower(load_data(), update.effective_chat.id):
+        await update.message.reply_text(
+            "✋ This group only *displays* a shared board.\n"
+            "Edit the rankings from the control group — changes show up here automatically.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return True
     return False
 
 def rank_emoji(rank: int) -> str:
@@ -595,7 +634,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addcash @user <amount> — add to a member's amount\n"
         "/removecash @user <amount> — deduct from a member's amount\n"
         "/resetmember @user — zero out a member\n"
-        "/resetboard — wipe the entire board",
+        "/resetboard — wipe the entire board\n\n"
+        "*Linking groups:*\n"
+        "/link — in your control group, get a pairing code\n"
+        "/link <code> — in a display group, mirror that board (view-only)\n"
+        "/unlink — stop mirroring here",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -719,6 +762,8 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_group(update):
         return
+    if await reject_if_follower(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
@@ -746,6 +791,8 @@ async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_group(update):
+        return
+    if await reject_if_follower(update):
         return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
@@ -775,6 +822,8 @@ async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_group(update):
         return
+    if await reject_if_follower(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
@@ -802,6 +851,8 @@ async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_group(update):
+        return
+    if await reject_if_follower(update):
         return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
@@ -839,6 +890,8 @@ async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_group(update):
         return
+    if await reject_if_follower(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
@@ -855,6 +908,9 @@ async def cmd_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if is_follower(load_data(), update.effective_chat.id):
+        await query.edit_message_text("✋ This group only displays a shared board.")
+        return
     if not await is_admin(update, context):
         await query.edit_message_text("❌ Admins only.")
         return
@@ -865,6 +921,95 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🗑️ Leaderboard wiped.")
     else:
         await query.edit_message_text("Reset cancelled.")
+
+# ─────────────────────────────────────────
+#  COMMANDS  —  GROUP LINKING
+# ─────────────────────────────────────────
+
+def _new_pair_code() -> str:
+    while True:
+        code = "".join(secrets.choice(PAIR_ALPHA) for _ in range(6))
+        if code not in PAIR_CODES:
+            return code
+
+def _prune_pair_codes():
+    now = time.time()
+    for code in [c for c, (_, exp) in PAIR_CODES.items() if exp < now]:
+        PAIR_CODES.pop(code, None)
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Link a public 'display' group to a private 'control' group's board.
+      /link          — run in the CONTROL group → get a pairing code
+      /link <code>   — run in the DISPLAY group → start mirroring that board
+    """
+    if not await require_group(update):
+        return
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Admins only.")
+        return
+
+    data    = load_data()
+    chat_id = str(update.effective_chat.id)
+    _prune_pair_codes()
+
+    # ── join with a code: this group becomes a display mirror ──
+    if context.args:
+        code  = context.args[0].strip().upper()
+        entry = PAIR_CODES.get(code)
+        if not entry or entry[1] < time.time():
+            PAIR_CODES.pop(code, None)
+            await update.message.reply_text("❌ That code is invalid or expired. Generate a fresh one with /link in the control group.")
+            return
+        source = entry[0]
+        if source == chat_id:
+            await update.message.reply_text("❌ You can't link a group to itself.")
+            return
+        if has_followers(data, chat_id):
+            await update.message.reply_text("❌ Other groups already mirror *this* board. Unlink them before making this group a mirror.", parse_mode=ParseMode.MARKDOWN)
+            return
+        async with DATA_LOCK:
+            had_own = bool(data["chats"].get(chat_id, {}).get("users"))
+            data.setdefault("links", {})[chat_id] = source
+            save_data()
+        PAIR_CODES.pop(code, None)
+        note = ("\n\n_This group had its own board — it's hidden while linked. "
+                "Run /unlink to bring it back._") if had_own else ""
+        await update.message.reply_text(
+            "🔗 *Linked!* This group now mirrors the control group's board.\n"
+            "Rankings are edited over there; /leaderboard here always shows the latest." + note,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    # ── no code: hand out a pairing code for THIS group's board ──
+    if is_follower(data, chat_id):
+        await update.message.reply_text("❌ This group is itself a display mirror. Generate the code from the control group instead.")
+        return
+    code = _new_pair_code()
+    PAIR_CODES[code] = (chat_id, time.time() + PAIR_TTL)
+    await update.message.reply_text(
+        f"🔗 *Pairing code:* `{code}`\n\n"
+        f"In the group where you want to *show* this board, run:\n`/link {code}`\n\n"
+        f"Valid for {PAIR_TTL // 60} minutes. Anything you edit here shows up there.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def cmd_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stop mirroring: this display group returns to its own separate board."""
+    if not await require_group(update):
+        return
+    if not await is_admin(update, context):
+        await update.message.reply_text("❌ Admins only.")
+        return
+    data    = load_data()
+    chat_id = str(update.effective_chat.id)
+    async with DATA_LOCK:
+        if not is_follower(data, chat_id):
+            await update.message.reply_text("This group isn't mirroring another board — nothing to unlink.")
+            return
+        data["links"].pop(chat_id, None)
+        save_data()
+    await update.message.reply_text("🔓 *Unlinked.* This group is back to its own separate board.", parse_mode=ParseMode.MARKDOWN)
 
 # ─────────────────────────────────────────
 #  MAIN
@@ -900,6 +1045,10 @@ def main():
     app.add_handler(CommandHandler("resetmember", cmd_resetmember))
     app.add_handler(CommandHandler("resetboard",  cmd_resetboard))
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
+
+    # group linking
+    app.add_handler(CommandHandler("link",   cmd_link))
+    app.add_handler(CommandHandler("unlink", cmd_unlink))
 
     print("🤖 Bot running...")
     app.run_polling(drop_pending_updates=True)

@@ -4,6 +4,8 @@ A group ranking bot where admins control member scores. Generates visual rank ca
 
 **Each group gets its own independent board.** Add the same bot to as many groups as you like — scores, leaderboards and `/resetboard` are all scoped to the group they're used in, so groups never share or overwrite each other's data.
 
+**Or link a private control group to a public display group.** Edit the rankings in a back-office group and just *show* the leaderboard in the public group — see [Linked groups](#linked-groups-control--display) below.
+
 ---
 
 ## Setup
@@ -50,6 +52,34 @@ Or set it permanently in your environment / a `.env` file.
 | `/removecash <amount>` | Reply to a member — deducts from their score (floors at 0) |
 | `/resetmember` | Reply to a member — zeros out their score |
 | `/resetboard` | Wipes all data (asks for confirmation first) |
+| `/link` | Get a pairing code so another group can mirror this board |
+| `/link <code>` | Make **this** group a view-only mirror of the coded board |
+| `/unlink` | Stop mirroring — this group returns to its own board |
+
+---
+
+## Linked groups (control + display)
+
+Want to keep the messy admin work private and only show a clean leaderboard to
+everyone? Link a **control group** (where you edit) to one or more **display
+groups** (where members just view). They all share one board.
+
+**Setup (both must have the bot added + promoted to admin):**
+
+1. In your **control group** (e.g. your private back group), run `/link`.
+   The bot replies with a 6-character pairing code.
+2. In your **display group** (e.g. the new public group), run `/link <code>`
+   within 10 minutes.
+
+That's it. Now:
+
+- `/setcash`, `/addcash`, etc. work **only in the control group**.
+- The display group shows the same `/leaderboard`, `/myrank`, `/rank`, `/top3`
+  live — but edit commands there are blocked, so nobody changes scores in public.
+- Run `/unlink` in the display group any time to give it back its own board.
+
+One control group can feed several display groups. A group can't mirror itself,
+and a group that already has mirrors can't become a mirror.
 
 ---
 
