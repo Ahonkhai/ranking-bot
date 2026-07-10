@@ -2,6 +2,8 @@
 
 A group ranking bot where admins control member scores. Generates visual rank cards and leaderboards.
 
+**Each group gets its own independent board.** Add the same bot to as many groups as you like — scores, leaderboards and `/resetboard` are all scoped to the group they're used in, so groups never share or overwrite each other's data.
+
 ---
 
 ## Setup
@@ -23,9 +25,10 @@ BOT_TOKEN="your_token_here" python bot.py
 
 Or set it permanently in your environment / a `.env` file.
 
-### 4. Add the bot to your group
+### 4. Add the bot to your group(s)
 - Add the bot as a **member** of your group
 - Promote it to **admin** so it can fetch the admin list (needed to show 👑 crowns on leaderboard)
+- Repeat for any other group — each one starts with a fresh, separate board
 
 ---
 
@@ -51,7 +54,29 @@ Or set it permanently in your environment / a `.env` file.
 ---
 
 ## Data
-Scores are stored in `data.json` in the same directory. Back this file up if needed.
+Scores are stored in `data.json` in the same directory, keyed by group:
+
+```json
+{
+  "chats": {
+    "-1001234567890": { "users": { "<user_id>": { "name": "@handle", "cash": 5000 } } }
+  }
+}
+```
+
+Back this file up if needed.
+
+### Upgrading from a single-group version
+Older versions stored one shared board as a flat `{"users": {...}}`. On first run the bot
+migrates that automatically. To attach the old scores to your existing group, set
+`LEGACY_CHAT_ID` to that group's numeric chat id before starting:
+
+```bash
+LEGACY_CHAT_ID="-1001234567890" BOT_TOKEN="..." python bot.py
+```
+
+Without it, the old board is preserved under the key `"legacy"` (nothing is lost) and each
+group simply starts fresh.
 
 ---
 

@@ -23,7 +23,9 @@ DATA_FILE  = os.getenv("DATA_FILE", "data.json")   # point at a mounted volume i
 CURRENCY   = "💰"
 
 # ── In-memory state (loaded once at startup) + concurrency guards ──
-DATA: dict        = {"users": {}}
+# Data is scoped per chat, so every group the bot is in has its own independent
+# board:  {"chats": {"<chat_id>": {"users": {"<uid>": {"name", "cash"}}}}}
+DATA: dict        = {"chats": {}}
 DATA_LOCK         = asyncio.Lock()        # serialize read-modify-write on DATA
 RENDER_SEM        = asyncio.Semaphore(1)  # one PIL render at a time, off the loop
 
@@ -38,18 +40,47 @@ AVATAR_TTL = 3600  # seconds
 def init_data():
     """Load data.json from disk once, into the shared in-memory DATA dict."""
     global DATA
+    raw = {"chats": {}}
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, encoding="utf-8") as f:
-                DATA = json.load(f)
+                raw = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             print(f"WARNING: could not read {DATA_FILE} ({e}); starting empty.")
-            DATA = {"users": {}}
-    DATA.setdefault("users", {})
+            raw = {"chats": {}}
+    DATA = _migrate(raw)
+
+def _migrate(raw: dict) -> dict:
+    """Normalise to the per-chat schema. Older builds stored a single flat
+    {"users": {...}} board shared across every group; preserve that data rather
+    than dropping it. Set LEGACY_CHAT_ID to your existing group's numeric id to
+    attach the old board to that group; otherwise it's kept under key 'legacy'."""
+    if isinstance(raw.get("chats"), dict):
+        for bucket in raw["chats"].values():
+            bucket.setdefault("users", {})
+        return raw
+
+    data = {"chats": {}}
+    legacy_users = raw.get("users")
+    if legacy_users:
+        legacy_chat = os.getenv("LEGACY_CHAT_ID")
+        target = str(legacy_chat) if legacy_chat else "legacy"
+        data["chats"][target] = {"users": legacy_users}
+        if not legacy_chat:
+            print("WARNING: migrated the old shared board to chat key 'legacy'. "
+                  "Set LEGACY_CHAT_ID to your existing group's numeric id to attach "
+                  "it to that group instead.")
+    return data
 
 def load_data() -> dict:
     """Return the shared in-memory store (no disk read)."""
     return DATA
+
+def chat_users(data: dict, chat_id) -> dict:
+    """Return the per-chat users map for chat_id, creating it if needed."""
+    bucket = data["chats"].setdefault(str(chat_id), {"users": {}})
+    bucket.setdefault("users", {})
+    return bucket["users"]
 
 def save_data(data: dict | None = None):
     """Atomically persist DATA: write a temp file, then os.replace it in."""
@@ -62,16 +93,16 @@ def save_data(data: dict | None = None):
         json.dump(d, f, indent=2, ensure_ascii=False)
     os.replace(tmp, DATA_FILE)   # atomic on the same filesystem
 
-def get_user(data: dict, uid: int, name: str = "") -> dict:
+def get_user(users: dict, uid: int, name: str = "") -> dict:
     key = str(uid)
-    if key not in data["users"]:
-        data["users"][key] = {"name": name or f"User{uid}", "cash": 0}
+    if key not in users:
+        users[key] = {"name": name or f"User{uid}", "cash": 0}
     elif name:
-        data["users"][key]["name"] = name
-    return data["users"][key]
+        users[key]["name"] = name
+    return users[key]
 
-def sorted_members(data: dict) -> list[tuple]:
-    return sorted(data["users"].items(), key=lambda x: x[1]["cash"], reverse=True)
+def sorted_members(users: dict) -> list[tuple]:
+    return sorted(users.items(), key=lambda x: x[1]["cash"], reverse=True)
 
 # ─────────────────────────────────────────
 #  HELPERS
@@ -80,6 +111,14 @@ def sorted_members(data: dict) -> list[tuple]:
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     admins = await update.effective_chat.get_administrators()
     return update.effective_user.id in {a.user.id for a in admins}
+
+async def require_group(update: Update) -> bool:
+    """Board commands only make sense inside a group. Reject DMs/channels with a
+    friendly nudge so a private chat never spins up its own stray board."""
+    if update.effective_chat.type in ("group", "supergroup"):
+        return True
+    await update.message.reply_text("👥 Add me to a group and run this there — each group keeps its own board.")
+    return False
 
 def rank_emoji(rank: int) -> str:
     return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
@@ -92,12 +131,13 @@ def display_name(user) -> str:
         return f"@{user.username}"
     return user.full_name or f"User{user.id}"
 
-async def resolve_target(update, context, args):
+async def resolve_target(update, context, args, users):
     """
     Returns (user_id, name_str, amount) from either:
       - reply style:  reply to message + /cmd amount
       - tag style:    /cmd amount @username  OR  /cmd @username amount
-    Returns (None, None, None) on bad input, (-1, name, amount) if username not found in data.
+    `users` is the current group's users map. Returns (None, None, None) on bad
+    input, (-1, name, amount) if the tagged username isn't on this group's board.
     """
     if update.message.reply_to_message:
         t = update.message.reply_to_message.from_user
@@ -123,8 +163,7 @@ async def resolve_target(update, context, args):
     if username is None or amount is None:
         return None, None, None
 
-    data = load_data()
-    for uid, u in data["users"].items():
+    for uid, u in users.items():
         saved = u["name"].lstrip("@")
         if saved.lower() == username.lower():
             return int(uid), u["name"], amount
@@ -561,14 +600,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    if not data["users"]:
+    if not await require_group(update):
+        return
+    users = chat_users(load_data(), update.effective_chat.id)
+    if not users:
         await update.message.reply_text("The leaderboard is empty. Admins can use /setcash to add members.")
         return
 
     admins    = await update.effective_chat.get_administrators()
     admin_ids = {a.user.id for a in admins}
-    members   = sorted_members(data)
+    members   = sorted_members(users)
 
     top     = members[:15]
     raws    = await asyncio.gather(*(fetch_avatar_bytes(context.bot, int(uid)) for uid, _ in top))
@@ -583,16 +624,18 @@ async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_myrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     user    = update.effective_user
-    data    = load_data()
+    users   = chat_users(load_data(), update.effective_chat.id)
     uid_str = str(user.id)
 
-    if uid_str not in data["users"]:
+    if uid_str not in users:
         await update.message.reply_text("You're not on the board yet. Ask an admin to add you.")
         return
 
-    udata   = data["users"][uid_str]
-    members = sorted_members(data)
+    udata   = users[uid_str]
+    members = sorted_members(users)
     rank    = next(i + 1 for i, (uid, _) in enumerate(members) if uid == uid_str)
     total   = len(members)
 
@@ -609,7 +652,9 @@ async def cmd_myrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check someone else's rank by replying or tagging: /rank @username"""
-    data    = load_data()
+    if not await require_group(update):
+        return
+    users   = chat_users(load_data(), update.effective_chat.id)
     uid_str = None
     name    = None
 
@@ -621,7 +666,7 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # tag style: /rank @username
     elif context.args:
         tag = context.args[0].lstrip("@")
-        for uid, u in data["users"].items():
+        for uid, u in users.items():
             if u["name"].lstrip("@").lower() == tag.lower():
                 uid_str = uid
                 name    = u["name"]
@@ -633,12 +678,12 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: `/rank @username`  or reply to their message + `/rank`", parse_mode=ParseMode.MARKDOWN)
         return
 
-    if uid_str not in data["users"]:
+    if uid_str not in users:
         await update.message.reply_text(f"{name} isn't on the board yet.")
         return
 
-    udata   = data["users"][uid_str]
-    members = sorted_members(data)
+    udata   = users[uid_str]
+    members = sorted_members(users)
     rank    = next(i + 1 for i, (uid, _) in enumerate(members) if uid == uid_str)
     total   = len(members)
 
@@ -654,8 +699,10 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data    = load_data()
-    members = sorted_members(data)[:3]
+    if not await require_group(update):
+        return
+    users   = chat_users(load_data(), update.effective_chat.id)
+    members = sorted_members(users)[:3]
     if not members:
         await update.message.reply_text("No one on the board yet.")
         return
@@ -670,10 +717,13 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────
 
 async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
-    uid, name, amount = await resolve_target(update, context, context.args)
+    users = chat_users(load_data(), update.effective_chat.id)
+    uid, name, amount = await resolve_target(update, context, context.args, users)
     if uid is None:
         await update.message.reply_text("Usage: `/setcash 5000 @username`  or reply to a message + `/setcash 5000`", parse_mode=ParseMode.MARKDOWN)
         return
@@ -684,11 +734,10 @@ async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
     async with DATA_LOCK:
-        data  = load_data()
-        udata = get_user(data, uid, name)
+        udata = get_user(users, uid, name)
         udata["cash"] = amount
-        save_data(data)
-        members = sorted_members(data)
+        save_data()
+        members = sorted_members(users)
         rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ *{name}* set to *${fmt(amount)}*  —  now rank #{rank}",
@@ -696,10 +745,13 @@ async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
-    uid, name, amount = await resolve_target(update, context, context.args)
+    users = chat_users(load_data(), update.effective_chat.id)
+    uid, name, amount = await resolve_target(update, context, context.args, users)
     if uid is None:
         await update.message.reply_text("Usage: `/addcash 5000 @username`  or reply to a message + `/addcash 5000`", parse_mode=ParseMode.MARKDOWN)
         return
@@ -710,11 +762,10 @@ async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
     async with DATA_LOCK:
-        data  = load_data()
-        udata = get_user(data, uid, name)
+        udata = get_user(users, uid, name)
         udata["cash"] += amount
-        save_data(data)
-        members = sorted_members(data)
+        save_data()
+        members = sorted_members(users)
         rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ Added *${fmt(amount)}* to *{name}*\nNew total: *${fmt(udata['cash'])}*  —  rank #{rank}",
@@ -722,10 +773,13 @@ async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
-    uid, name, amount = await resolve_target(update, context, context.args)
+    users = chat_users(load_data(), update.effective_chat.id)
+    uid, name, amount = await resolve_target(update, context, context.args, users)
     if uid is None:
         await update.message.reply_text("Usage: `/removecash 5000 @username`  or reply to a message + `/removecash 5000`", parse_mode=ParseMode.MARKDOWN)
         return
@@ -736,11 +790,10 @@ async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {name} hasn't messaged in the group yet — can't find them. Have them send a message first.")
         return
     async with DATA_LOCK:
-        data  = load_data()
-        udata = get_user(data, uid, name)
+        udata = get_user(users, uid, name)
         udata["cash"] = max(0, udata["cash"] - amount)
-        save_data(data)
-        members = sorted_members(data)
+        save_data()
+        members = sorted_members(users)
         rank    = next(i + 1 for i, (u, _) in enumerate(members) if u == str(uid))
     await update.message.reply_text(
         f"✅ Removed *${fmt(amount)}* from *{name}*\nNew total: *${fmt(udata['cash'])}*  —  rank #{rank}",
@@ -748,9 +801,12 @@ async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
+    users = chat_users(load_data(), update.effective_chat.id)
     # resetmember has no amount — handle tag or reply separately
     target_user = None
     target_name = None
@@ -760,8 +816,7 @@ async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_name = display_name(t)
     elif context.args:
         tag = context.args[0].lstrip("@")
-        data = load_data()
-        for uid, u in data["users"].items():
+        for uid, u in users.items():
             if u["name"].lstrip("@").lower() == tag.lower():
                 target_user = uid
                 target_name = u["name"]
@@ -773,16 +828,17 @@ async def cmd_resetmember(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: `/resetmember @username`  or reply to their message + `/resetmember`", parse_mode=ParseMode.MARKDOWN)
         return
     async with DATA_LOCK:
-        data = load_data()
-        if target_user in data["users"]:
-            data["users"][target_user]["cash"] = 0
-            save_data(data)
+        if target_user in users:
+            users[target_user]["cash"] = 0
+            save_data()
     await update.message.reply_text(
         f"✅ *{target_name}* has been reset to $0.",
         parse_mode=ParseMode.MARKDOWN
     )
 
 async def cmd_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_group(update):
+        return
     if not await is_admin(update, context):
         await update.message.reply_text("❌ Admins only.")
         return
@@ -804,7 +860,7 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if query.data == "reset_confirm":
         async with DATA_LOCK:
-            DATA["users"].clear()
+            chat_users(load_data(), update.effective_chat.id).clear()
             save_data()
         await query.edit_message_text("🗑️ Leaderboard wiped.")
     else:
