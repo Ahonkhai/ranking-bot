@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import socket
+import shutil
 import asyncio
 from functools import lru_cache
 from datetime import datetime
@@ -11,6 +13,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes, CallbackQueryHandler
 )
 from telegram.constants import ParseMode
+from telegram.error import Conflict
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 # ─────────────────────────────────────────
@@ -35,9 +38,17 @@ AVATAR_TTL = 3600  # seconds
 #  DATA LAYER
 # ─────────────────────────────────────────
 
-def init_data():
-    """Load data.json from disk once, into the shared in-memory DATA dict."""
-    global DATA
+_DATA_STAMP = None    # (mtime_ns, size) of data.json as we last read/wrote it
+
+def _file_stamp():
+    try:
+        st = os.stat(DATA_FILE)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+def _read_from_disk():
+    global DATA, _DATA_STAMP
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, encoding="utf-8") as f:
@@ -45,22 +56,57 @@ def init_data():
         except (json.JSONDecodeError, OSError) as e:
             print(f"WARNING: could not read {DATA_FILE} ({e}); starting empty.")
             DATA = {"users": {}}
+    else:
+        DATA = {"users": {}}
     DATA.setdefault("users", {})
+    _DATA_STAMP = _file_stamp()
+
+def init_data():
+    """Load data.json from disk at startup."""
+    _read_from_disk()
 
 def load_data() -> dict:
-    """Return the shared in-memory store (no disk read)."""
+    """Shared in-memory store, re-read if data.json changed underneath us.
+
+    The stamp check means a second process (or a manual edit) can never be
+    silently clobbered by a stale in-memory snapshot — we always mutate the
+    newest version on disk."""
+    if _file_stamp() != _DATA_STAMP:
+        _read_from_disk()
     return DATA
 
+BACKUP_KEEP = 15   # rolling snapshots kept beside the data file
+
+def _write_backup():
+    """Snapshot the existing data file before we overwrite it. Best-effort:
+    a failed backup must never block a score change."""
+    if not os.path.exists(DATA_FILE):
+        return
+    bdir = os.path.join(os.path.dirname(DATA_FILE) or ".", "backups")
+    try:
+        os.makedirs(bdir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(DATA_FILE, os.path.join(bdir, f"data-{stamp}.json"))
+        snaps = sorted(f for f in os.listdir(bdir)
+                       if f.startswith("data-") and f.endswith(".json"))
+        for old in snaps[:-BACKUP_KEEP]:
+            os.remove(os.path.join(bdir, old))
+    except OSError:
+        pass
+
 def save_data(data: dict | None = None):
-    """Atomically persist DATA: write a temp file, then os.replace it in."""
+    """Atomically persist DATA: back up, write a temp file, then os.replace it in."""
+    global _DATA_STAMP
     d = DATA if data is None else data
     directory = os.path.dirname(DATA_FILE)
     if directory:
         os.makedirs(directory, exist_ok=True)
+    _write_backup()
     tmp = f"{DATA_FILE}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=2, ensure_ascii=False)
     os.replace(tmp, DATA_FILE)   # atomic on the same filesystem
+    _DATA_STAMP = _file_stamp()
 
 def get_user(data: dict, uid: int, name: str = "") -> dict:
     key = str(uid)
@@ -814,7 +860,40 @@ async def reset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ─────────────────────────────────────────
 
+_INSTANCE_SOCK = None   # held open for the process lifetime = our "only one bot" lock
+
+def acquire_single_instance_lock(port=47653) -> bool:
+    """Bind a loopback port as a lock. A second `python bot.py` fails to bind and
+    refuses to start — two pollers fight over getUpdates and their separate
+    snapshots overwrite each other's scores. Set ALLOW_MULTIPLE_INSTANCES=1 to skip."""
+    global _INSTANCE_SOCK
+    if os.getenv("ALLOW_MULTIPLE_INSTANCES") == "1":
+        return True
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        s.listen(1)
+    except OSError:
+        s.close()
+        return False
+    _INSTANCE_SOCK = s
+    return True
+
+async def on_error(update, context):
+    """Surface the 'another poller is running' case loudly instead of flapping."""
+    if isinstance(context.error, Conflict):
+        print("ERROR: Telegram says another instance is polling this bot token "
+              "(maybe on another machine or in Docker). Scores will flap and can be "
+              "overwritten — shut the other one down.")
+    else:
+        print(f"Handler error: {context.error!r}")
+
 def main():
+    if not acquire_single_instance_lock():
+        raise SystemExit(
+            "ERROR: another instance of this bot is already running on this machine.\n"
+            "Close it first — two instances overwrite each other's scores."
+        )
     init_data()
     # Generous timeouts: the route to api.telegram.org can be slow/throttled,
     # and the default 5s connect timeout intermittently fails the TLS handshake.
@@ -844,6 +923,7 @@ def main():
     app.add_handler(CommandHandler("resetmember", cmd_resetmember))
     app.add_handler(CommandHandler("resetboard",  cmd_resetboard))
     app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_"))
+    app.add_error_handler(on_error)
 
     print("🤖 Bot running...")
     app.run_polling(drop_pending_updates=True)
