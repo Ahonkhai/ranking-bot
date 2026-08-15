@@ -1,10 +1,25 @@
-"""Importing the legacy data.json, and the caches that replaced the old
-unbounded dicts."""
+"""Importing the legacy data.json, upgrading an older schema, and the caches
+that replaced the old unbounded dicts."""
 
 import json
+import sqlite3
 
-from rankbot import caches, migrate, store
+from rankbot import caches, db, migrate, store
 from tests.conftest import CHAT
+
+V1_SCHEMA = """
+CREATE TABLE chats(chat_id INTEGER PRIMARY KEY, title TEXT,
+  current_season INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE seasons(chat_id INTEGER, season_id INTEGER, name TEXT,
+  started_at TEXT, ended_at TEXT, PRIMARY KEY(chat_id, season_id));
+CREATE TABLE members(chat_id INTEGER, user_id INTEGER,
+  username TEXT COLLATE NOCASE, full_name TEXT, last_seen TEXT,
+  PRIMARY KEY(chat_id, user_id));
+CREATE TABLE ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER,
+  season_id INTEGER, user_id INTEGER, delta INTEGER, reason TEXT,
+  actor_id INTEGER, txn TEXT, created_at TEXT, voided_by INTEGER, voids INTEGER);
+PRAGMA user_version=1;
+"""
 
 LEGACY = {
     "users": {
@@ -71,6 +86,47 @@ def test_split_name():
     assert migrate.split_name("@Dave") == ("Dave", None)
     assert migrate.split_name("Dave Smith") == (None, "Dave Smith")
     assert migrate.split_name("") == (None, None)
+
+
+# ── schema upgrade ───────────────────────────────────────────────────────
+
+def test_a_v1_database_upgrades_in_place(tmp_path, monkeypatch):
+    """An existing file predates members.joined_at; opening it must add the
+    column and backfill it rather than losing the member."""
+    path = tmp_path / "v1.db"
+    raw = sqlite3.connect(str(path))
+    raw.executescript(V1_SCHEMA)
+    raw.executescript(
+        "INSERT INTO chats VALUES(-1,'Old',1,'2026-01-12T10:00:00+00:00');"
+        "INSERT INTO members VALUES(-1,7,'legacy','Legacy','2026-06-01T10:00:00+00:00');"
+        "INSERT INTO ledger VALUES(1,-1,1,7,12200,'seed',99,NULL,"
+        "  '2026-01-12T10:00:00+00:00',NULL,NULL);"
+    )
+    raw.commit()
+    raw.close()
+
+    db.close()
+    monkeypatch.setattr("rankbot.config.DB_PATH", str(path))
+    conn = db.connect(str(path))
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(members)")}
+        assert "joined_at" in columns
+        # Backfilled from the earliest ledger entry, not from today.
+        assert store.joined_at(-1, 7).startswith("2026-01-12")
+        assert store.balance(-1, 7) == 12200
+    finally:
+        db.close()
+
+
+def test_upgrading_twice_is_harmless(tmp_path, monkeypatch):
+    path = tmp_path / "twice.db"
+    db.close()
+    monkeypatch.setattr("rankbot.config.DB_PATH", str(path))
+    for _ in range(2):
+        conn = db.connect(str(path))
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+        db.close()
 
 
 # ── caches ───────────────────────────────────────────────────────────────

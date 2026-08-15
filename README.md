@@ -37,7 +37,8 @@ read the admin list (for the 👑 crowns) and see messages (for member indexing)
 | `/leaderboard` | The ranked board, paged, with week / month / all-time views |
 | `/leaderboard week` | Same board over a time window (`week`, `month`, `alltime`) |
 | `/myrank` | Your rank card |
-| `/rank @user` | Someone else's card |
+| `/rank` | Reply to a member's message for their card |
+| `/rank @user` | Someone else's card by handle |
 | `/top3` | Quick text shoutout |
 | `/history` | Your recent entries and who awarded them |
 | `/give 500 @user` | Send some of your own points (set `ALLOW_TRANSFERS=0` to disable) |
@@ -76,6 +77,72 @@ non-voided rows in the `ledger` table, so:
 `/setcash 400` on someone holding 1000 is stored as a `-600` entry, not as an
 overwrite.
 
+### Ties
+
+Standings use standard competition ranking: equal balances share a rank and the
+next distinct balance skips the ones consumed (1, 2, 2, 4). The board and the
+rank card read from the same function, so a tie never shows two different
+numbers in two places.
+
+---
+
+## The rank card
+
+`/myrank` and `/rank` render a portrait card. Every figure on it is derived at
+request time — nothing about the card is stored or hardcoded.
+
+| Field | Where it comes from |
+|---|---|
+| Rank / total | `standings()`, competition-ranked |
+| Total cash | Current season balance |
+| Green delta | Net cash movement in the rank-change window; hidden when zero |
+| Level & title | `levels.py`, from lifetime XP |
+| XP bar | `levels.progress_for_xp()` |
+| Rank change | Real historical rank from the ledger; `—` when there is no earlier rank |
+| Percentile | `ceil(rank / total × 100)`, floored at 1 |
+| Joined | First ledger entry, else when the member was first indexed |
+| Crown | Rank 1 or a chat admin; everyone else gets their level in the badge |
+| Portrait | Telegram profile photo, cached; a gold initial when there is none |
+
+### XP and levels
+
+XP is **not** a second currency to keep in sync. It is the lifetime sum of
+every positive ledger entry, read straight off the data that already exists:
+
+```sql
+SELECT SUM(delta) FROM ledger WHERE user_id = ? AND delta > 0 AND voided_by IS NULL
+```
+
+That makes it monotonic by construction — deducting cash or starting a new
+season lowers a balance but never a level — and it needed no new storage.
+
+The curve lives in [`rankbot/levels.py`](rankbot/levels.py):
+
+```python
+cumulative_xp_for_level(level)   # total XP to reach a level
+xp_required_for_level(level)     # cost of that one level
+level_for_xp(xp)                 # inverse, by bisection
+progress_for_xp(xp)              # everything the bar needs
+```
+
+`level_for_xp` bisects the ladder rather than inverting the formula
+algebraically, so retuning `XP_LINEAR` / `XP_QUADRATIC` — or replacing the
+curve entirely — needs no matching maths. Titles are the `TITLES` list in the
+same module: `(minimum_level, name)` pairs, edit freely.
+
+By default the bar measures progress *within* the current level, so it empties
+on every level-up and the two numbers under it are exactly the pair the
+percentage is computed from. Set `XP_BAR_CUMULATIVE=1` for lifetime XP against
+the next level's full requirement instead.
+
+### Rank change
+
+Derived from the ledger rather than stored as a `previous_rank` snapshot:
+`ranks_as_of(chat, scope, cutoff)` replays balances as they stood at any
+timestamp. It cannot drift out of sync with the scores, needs no extra writes,
+and a member with no entries before the cutoff correctly shows `—` rather than
+an invented movement. The window is `RANK_CHANGE_WINDOW_HOURS` (default 24).
+
 ### Migrating from the old `data.json`
 
 The legacy format had no chat id, so the target chat has to be named:
@@ -100,6 +167,11 @@ All optional except the token.
 | `DB_PATH` | `data.db` | SQLite file. Put it on a mounted volume in production. |
 | `DATA_FILE` | `data.json` | Legacy file, only read by the import. |
 | `PAGE_SIZE` | `15` | Rows per leaderboard page. |
+| `CURRENCY_SYMBOL` | `$` | Printed before amounts on the rendered cards. |
+| `XP_LINEAR` | `500` | Linear term of the level curve. |
+| `XP_QUADRATIC` | `50` | Quadratic term of the level curve. |
+| `XP_BAR_CUMULATIVE` | `0` | `1` shows lifetime XP against the next level's total. |
+| `RANK_CHANGE_WINDOW_HOURS` | `24` | How far back ↑/↓ movement looks. |
 | `ALLOW_TRANSFERS` | `1` | Enables `/give`. |
 | `COOLDOWN_SECONDS` | `4` | Per-user cooldown on the image commands. |
 | `RENDER_CONCURRENCY` | `3` | Simultaneous PIL renders. |
@@ -144,8 +216,10 @@ Layout:
 bot.py              entrypoint
 rankbot/
   config.py         every environment variable
-  db.py             connection + schema
-  store.py          ledger operations — balances, seasons, undo, transfers
+  db.py             connection + schema (versioned, self-migrating)
+  store.py          ledger operations — balances, ranks, seasons, undo, transfers
+  levels.py         XP curve, levels, member titles
+  cards.py          assembles a RankCard value object for the renderer
   migrate.py        data.json import
   identity.py       target resolution and HTML escaping
   caches.py         admin / avatar / board-image caches
@@ -156,3 +230,7 @@ rankbot/
   handlers/         common, public, admin, boards, passive
 tests/
 ```
+
+The renderer receives a finished `RankCard` and looks nothing up itself, so
+two members requesting at once cannot bleed data onto each other's card —
+there is a test that renders from a thread pool and asserts exactly that.
