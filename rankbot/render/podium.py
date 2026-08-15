@@ -22,14 +22,19 @@ W, H = 768 * S, 450 * S      # the reference's landscape proportions
 
 GROUND_TOP, GROUND_BOT = (17, 15, 12), (7, 6, 6)
 
-BASELINE = 340 * S           # every pedestal stands on this line
-COLUMNS = (196, 384, 572)    # centres: 2nd, 1st, 3rd
+BASELINE = 320 * S           # every pedestal stands on this line
+COLUMNS = (190, 384, 578)    # centres: 2nd, 1st, 3rd
 SLOT_ORDER = (1, 0, 2)       # which standings index lands in which column
 
-PEDESTAL_W = 178 * S
-PEDESTAL_H = (111 * S, 79 * S, 64 * S)   # by rank position: 1st, 2nd, 3rd
-AVATAR_D = (122 * S, 95 * S, 95 * S)
-OVERLAP = (12 * S, 11 * S, 11 * S)       # how far the avatar sinks into the top
+# Wide enough that the three plinths overlap slightly and read as one connected
+# podium rather than three separate objects. The centre is drawn last so it
+# sits in front of its neighbours.
+PEDESTAL_W = 200 * S
+PEDESTAL_H = (85 * S, 62 * S, 50 * S)    # by rank position: 1st, 2nd, 3rd
+AVATAR_D = (150 * S, 120 * S, 114 * S)
+OVERLAP = (24 * S, 20 * S, 20 * S)       # how far the avatar sinks into the top
+
+DRAW_ORDER = (0, 2, 1)                   # slots: left, right, centre
 
 
 def _fmt(n: int) -> str:
@@ -114,19 +119,25 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
     draw_tracked(img, (bx0 + 15 * S, by0 + 11 * S), "VIEW ALL", vf, (226, 213, 182), 2 * S)
 
     # ── podium ────────────────────────────────────────────────────────
-    for slot, index in enumerate(SLOT_ORDER):
+    # Two passes, both left → right → centre. The plinths overlap so the group
+    # reads as one podium, and drawing the champion last keeps it in front of
+    # its neighbours instead of being clipped by them.
+    placed = []
+    for slot in DRAW_ORDER:
+        index = SLOT_ORDER[slot]
         if index >= len(rows):
             continue
         row = rows[index]
         cx = COLUMNS[slot] * S
         metal = rank_metal(row["rank"])
         height = PEDESTAL_H[index]
-        av_d = AVATAR_D[index]
         top = BASELINE - height
-        first = index == 0
-
         _cylinder(img, cx, top, height, metal)
+        placed.append((index, row, cx, metal, top))
 
+    for index, row, cx, metal, top in placed:
+        av_d = AVATAR_D[index]
+        first = index == 0
         av_cy = top + OVERLAP[index] - av_d // 2
 
         if first:
@@ -142,11 +153,11 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
                      ring_w=max(3 * S, av_d // 24), glow_opacity=64 if first else 0)
 
         if first:
-            crown = crown_img(43 * S, GOLD_M)
+            crown = crown_img(48 * S, GOLD_M)
             composite_at(img, crown, cx - crown.width / 2,
                          av_cy - av_d / 2 - crown.height + 4 * S)
         else:
-            br = 17 * S
+            br = 19 * S
             by = av_cy - av_d / 2 - br + 5 * S
             draw.ellipse([cx - br - 2 * S, by - br - 2 * S,
                           cx + br + 2 * S, by + br + 2 * S],
@@ -154,12 +165,12 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
             metal_badge(img, cx, by, br, metal, str(row["rank"]))
 
         # Name and amount, aligned across all three columns.
-        nfont = get_font(17 * S, bold=True)
-        name = fit_text(row["name"], nfont, PEDESTAL_W - 10 * S)
+        nfont = get_font(18 * S, bold=True)
+        name = fit_text(row["name"], nfont, PEDESTAL_W - 16 * S)
         ntw, _, nb = text_size(nfont, name)
         draw.text((cx - ntw / 2 - nb[0], BASELINE + 26 * S), name, font=nfont, fill=INK)
 
-        afont = get_font((24 if first else 20) * S, bold=True)
+        afont = get_font((25 if first else 21) * S, bold=True)
         amount = gradient_text_img(_fmt(row["balance"]), afont, metal)
         composite_at(img, amount, cx - amount.width / 2, BASELINE + 54 * S)
 

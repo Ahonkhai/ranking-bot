@@ -18,18 +18,26 @@ def make_circular_avatar(raw: bytes, size: int) -> Image.Image:
     return av
 
 
+def initial_for(name: str) -> str:
+    """First letter or digit of a name.
+
+    Skips punctuation rather than taking name[0] blindly: members whose
+    Telegram name is "-" or "..." would otherwise get an avatar showing a
+    stray dash, which reads as a rendering fault rather than a person.
+    """
+    for ch in name.lstrip("@"):
+        if ch.isalnum():
+            return ch.upper()
+    return "?"
+
+
 def make_initials_avatar(name: str, size: int) -> Image.Image:
     """Charcoal disc with a gold-gradient initial."""
     av = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(av).ellipse([0, 0, size - 1, size - 1], fill=(30, 27, 20, 255))
-    letter = (name.lstrip("@")[:1] or "?").upper()
-    g = gradient_text_img(letter, get_font(int(size * 0.52), bold=True), GOLD_M)
+    g = gradient_text_img(initial_for(name), get_font(int(size * 0.52), bold=True), GOLD_M)
     paste_center(av, g, size / 2, size / 2)
     return av
-
-
-def initial_for(name: str) -> str:
-    return (name.lstrip("@")[:1] or "?").upper()
 
 
 def avatar_image(raw, name: str, uid: int, size: int) -> Image.Image:

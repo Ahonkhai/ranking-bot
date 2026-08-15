@@ -83,3 +83,20 @@ def test_fallback_avatar_follows_a_rename():
     first = avatar_image(None, "@alice", 999, 64)
     second = avatar_image(None, "@bob", 999, 64)
     assert first.tobytes() != second.tobytes()
+
+
+def test_punctuation_only_names_get_a_question_mark():
+    """A member whose Telegram name is "-" must not get an avatar showing a
+    stray dash — that reads as a rendering fault rather than a person."""
+    from rankbot.render.avatar import initial_for
+    assert initial_for("-") == "?"
+    assert initial_for("...") == "?"
+    assert initial_for("") == "?"
+    assert initial_for("@dave") == "D"
+    assert initial_for("-dave") == "D"
+    assert initial_for("7up") == "7"
+
+
+def test_a_punctuation_name_renders():
+    rows = podium((1, 1, "-", 24_000), (2, 2, "@ok", 100))
+    assert open_png(make_top3_image(rows)).width == 768
