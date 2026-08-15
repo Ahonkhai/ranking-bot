@@ -29,24 +29,24 @@ TOP3 = podium((1, 1, "@andrescash", 116_600),
 
 def test_renders_at_the_expected_size():
     img = open_png(make_top3_image(TOP3))
-    assert (img.width, img.height) == (800, 480)
+    assert (img.width, img.height) == (768, 450)
 
 
 def test_one_and_two_members_leave_slots_empty():
     for count in (1, 2):
         img = open_png(make_top3_image(TOP3[:count]))
-        assert (img.width, img.height) == (800, 480)
+        assert (img.width, img.height) == (768, 450)
 
 
 def test_empty_board_still_renders():
-    assert open_png(make_top3_image([])).width == 800
+    assert open_png(make_top3_image([])).width == 768
 
 
 def test_ties_keep_their_shared_rank():
     """Two members tied at rank 1 both get gold; competition ranking means the
     third is rank 3, not rank 2."""
     tied = podium((1, 1, "@a", 5_000), (1, 2, "@b", 5_000), (3, 3, "@c", 100))
-    assert open_png(make_top3_image(tied)).width == 800
+    assert open_png(make_top3_image(tied)).width == 768
 
 
 def test_hostile_and_oversized_input():
@@ -55,12 +55,12 @@ def test_hostile_and_oversized_input():
         (2, 2, "Somebody With A Very Long Display Name Indeed", 0),
         (3, 3, "", 1),
     )
-    assert open_png(make_top3_image(rough)).width == 800
+    assert open_png(make_top3_image(rough)).width == 768
 
 
 def test_corrupt_avatar_bytes_fall_back():
     avatars = {1: b"not an image", 2: None, 3: None}
-    assert open_png(make_top3_image(TOP3, avatars)).width == 800
+    assert open_png(make_top3_image(TOP3, avatars)).width == 768
 
 
 def test_identical_input_renders_identically():

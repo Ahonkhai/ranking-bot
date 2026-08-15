@@ -18,17 +18,17 @@ from .primitives import (composite_at, crown_img, draw_tracked, fit_text,
                          soft_shadow, text_size, tracked_width, vgradient)
 
 S = 2
-W, H = 800 * S, 480 * S      # the reference's landscape proportions
+W, H = 768 * S, 450 * S      # the reference's landscape proportions
 
 GROUND_TOP, GROUND_BOT = (17, 15, 12), (7, 6, 6)
 
-BASELINE = 368 * S           # every pedestal stands on this line
-COLUMNS = (205, 400, 595)    # centres: 2nd, 1st, 3rd
+BASELINE = 340 * S           # every pedestal stands on this line
+COLUMNS = (196, 384, 572)    # centres: 2nd, 1st, 3rd
 SLOT_ORDER = (1, 0, 2)       # which standings index lands in which column
 
-PEDESTAL_W = 186 * S
-PEDESTAL_H = (118 * S, 84 * S, 68 * S)   # by rank position: 1st, 2nd, 3rd
-AVATAR_D = (128 * S, 100 * S, 100 * S)
+PEDESTAL_W = 178 * S
+PEDESTAL_H = (111 * S, 79 * S, 64 * S)   # by rank position: 1st, 2nd, 3rd
+AVATAR_D = (122 * S, 95 * S, 95 * S)
 OVERLAP = (12 * S, 11 * S, 11 * S)       # how far the avatar sinks into the top
 
 
@@ -89,8 +89,8 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
     img = vgradient((W, H), GROUND_TOP, GROUND_BOT).convert("RGBA")
 
     # Warm pool of light behind the podium, brightest under the champion.
-    composite_at(img, radial_glow((740 * S, 430 * S), (176, 132, 52), opacity=58),
-                 W // 2 - 370 * S, 86 * S)
+    composite_at(img, radial_glow((700 * S, 400 * S), (176, 132, 52), opacity=58),
+                 W // 2 - 350 * S, 76 * S)
     draw = ImageDraw.Draw(img)
 
     # ── header ────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
                      ring_w=max(3 * S, av_d // 24), glow_opacity=64 if first else 0)
 
         if first:
-            crown = crown_img(46 * S, GOLD_M)
+            crown = crown_img(43 * S, GOLD_M)
             composite_at(img, crown, cx - crown.width / 2,
                          av_cy - av_d / 2 - crown.height + 4 * S)
         else:
@@ -159,7 +159,7 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
         ntw, _, nb = text_size(nfont, name)
         draw.text((cx - ntw / 2 - nb[0], BASELINE + 26 * S), name, font=nfont, fill=INK)
 
-        afont = get_font((25 if first else 21) * S, bold=True)
+        afont = get_font((24 if first else 20) * S, bold=True)
         amount = gradient_text_img(_fmt(row["balance"]), afont, metal)
         composite_at(img, amount, cx - amount.width / 2, BASELINE + 54 * S)
 
