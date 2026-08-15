@@ -1,7 +1,16 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.bench/
+
+# Data and snapshots — never commit scores.
 data.json
 data.json.tmp
 *.tmp
+*.db
+*.db-wal
+*.db-shm
 backups/
+
 .env
+.venv/
