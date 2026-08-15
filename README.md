@@ -218,6 +218,31 @@ All optional except the token.
 
 ---
 
+## Persistence
+
+**The database must live on a mounted volume or every redeploy starts from an
+empty board.** This is the single most common way to lose a leaderboard, and
+nothing about it raises an error — SQLite happily writes to the container
+filesystem right up until the container is replaced.
+
+On **Railway**: service → Settings → Volumes → attach one. The mount path does
+not matter; the bot reads `RAILWAY_VOLUME_MOUNT_PATH` and puts `rankbot.db`
+there automatically, overriding whatever `DB_PATH` says. Without a volume it
+logs a loud warning at every boot.
+
+On **plain Docker**: `-v ranking_data:/data`, matching `DB_PATH`.
+
+The startup line tells you which you got:
+
+```
+database ready at /data/rankbot.db (schema v2, persistent volume /data, existing)
+database ready at /data/rankbot.db (schema v2, local filesystem, newly created)
+```
+
+The second one is the one that loses your scores.
+
+---
+
 ## Docker
 
 ```bash

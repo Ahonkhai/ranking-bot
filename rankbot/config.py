@@ -26,9 +26,50 @@ def _bool(name: str, default: bool) -> bool:
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
+
+def _under(path: str, directory: str) -> bool:
+    root = os.path.abspath(directory)
+    target = os.path.abspath(path)
+    return target == root or target.startswith(root + os.sep)
+
+
+def resolve_storage(db_path: str, legacy: str, mount: str | None,
+                    exists=os.path.exists) -> tuple[str, str]:
+    """Put the database on the persistent mount, wherever it was attached.
+
+    Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume exists, and the
+    mount path is chosen in the dashboard — so a DB_PATH baked into the
+    Dockerfile can easily point somewhere else entirely. Anything outside the
+    mount is on the container filesystem and is wiped on every redeploy, which
+    silently empties the board.
+
+    The legacy file is only redirected when there is actually one on the
+    volume: it is read-only input, and someone who points DATA_FILE at a copy
+    shipped inside the image means it.
+    """
+    if not mount:
+        return db_path, legacy
+    if not _under(db_path, mount):
+        db_path = os.path.join(mount, "rankbot.db")
+    if not _under(legacy, mount):
+        candidate = os.path.join(mount, "data.json")
+        if exists(candidate):
+            legacy = candidate
+    return db_path, legacy
+
+
+# Railway sets these when a volume is attached to the service.
+VOLUME_MOUNT = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+ON_RAILWAY = bool(os.getenv("RAILWAY_PROJECT_ID")
+                  or os.getenv("RAILWAY_ENVIRONMENT_NAME")
+                  or os.getenv("RAILWAY_SERVICE_ID"))
+
 # Storage. DATA_FILE is only read once, by the migration.
-DB_PATH   = os.getenv("DB_PATH", "data.db")
-DATA_FILE = os.getenv("DATA_FILE", "data.json")
+DB_PATH, DATA_FILE = resolve_storage(
+    os.getenv("DB_PATH", "data.db"),
+    os.getenv("DATA_FILE", "data.json"),
+    VOLUME_MOUNT,
+)
 
 CURRENCY = os.getenv("CURRENCY", "💰")
 # Symbol printed before amounts on the rendered cards and boards.

@@ -5,6 +5,7 @@ the old mtime-stamp / temp-file / rolling-backup apparatus was approximating.
 """
 
 import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -71,6 +72,21 @@ CREATE INDEX IF NOT EXISTS ix_ledger_txn   ON ledger(chat_id, txn);
 """
 
 
+def storage_warning() -> str | None:
+    """Flag storage that won't survive a redeploy, before anyone loses a board."""
+    if config.VOLUME_MOUNT:
+        return None
+    if config.ON_RAILWAY:
+        return (
+            f"No Railway Volume is attached, so {config.DB_PATH} lives in the "
+            "container filesystem and EVERY REDEPLOY STARTS FROM AN EMPTY "
+            "BOARD. Fix: service -> Settings -> Volumes -> attach one (any "
+            "mount path). The bot puts its database there automatically on the "
+            "next boot."
+        )
+    return None
+
+
 def connect(path: str | None = None) -> sqlite3.Connection:
     """Open (once) and return the shared connection."""
     global _conn
@@ -78,6 +94,9 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         if _conn is not None:
             return _conn
         target = path or config.DB_PATH
+        directory = os.path.dirname(os.path.abspath(target))
+        os.makedirs(directory, exist_ok=True)
+        existed = os.path.exists(target)
         conn = sqlite3.connect(target, check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -89,7 +108,17 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         _upgrade(conn, was)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         _conn = conn
-        log.info("database ready at %s (schema v%d)", target, SCHEMA_VERSION)
+
+        where = (f"persistent volume {config.VOLUME_MOUNT}" if config.VOLUME_MOUNT
+                 else "local filesystem")
+        log.info("database ready at %s (schema v%d, %s, %s)",
+                 target, SCHEMA_VERSION, where,
+                 "existing" if existed else "newly created")
+        warning = storage_warning()
+        if warning:
+            log.warning(warning)
+        elif not existed and config.VOLUME_MOUNT:
+            log.info("no database on the volume yet — starting a fresh board")
         return conn
 
 
