@@ -1,0 +1,6 @@
+# Shell scripts and the Dockerfile must reach Linux with LF endings. Committed
+# from Windows with core.autocrlf=true, a CRLF entrypoint fails in the
+# container with the notoriously unhelpful `bad interpreter: /bin/sh^M`.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+docker-entrypoint.sh text eol=lf

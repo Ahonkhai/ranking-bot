@@ -28,9 +28,16 @@ VOLUME ["/data"]
 RUN useradd --create-home --uid 10001 rankbot \
     && mkdir -p /data \
     && chown -R rankbot:rankbot /app /data
-USER rankbot
+
+# No `USER` here on purpose. The container starts as root so the entrypoint can
+# take ownership of a runtime-mounted volume, then drops to `rankbot` itself.
+# Setting USER at build time instead locks the process out of any volume that
+# already existed — see docker-entrypoint.sh.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import sqlite3,os; sqlite3.connect(os.environ['DB_PATH']).execute('select 1')" || exit 1
+    CMD python -c "import sqlite3,os; sqlite3.connect(os.environ.get('DB_PATH','/data/rankbot.db')).execute('select 1')" || exit 1
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "bot.py"]
