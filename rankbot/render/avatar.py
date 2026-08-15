@@ -28,13 +28,21 @@ def make_initials_avatar(name: str, size: int) -> Image.Image:
     return av
 
 
+def initial_for(name: str) -> str:
+    return (name.lstrip("@")[:1] or "?").upper()
+
+
 def avatar_image(raw, name: str, uid: int, size: int) -> Image.Image:
     """Circular photo when bytes are present, else initials. Never raises.
 
     The finished disc is cached at the exact diameter it's drawn at, so a
     member appearing on both the board and a rank card costs one decode.
+
+    The initial is part of the key: a fallback avatar is drawn from the name,
+    so keying on the user id alone would keep serving the old letter after
+    someone renames.
     """
-    key = (uid, size, raw is not None)
+    key = (uid, size, True) if raw else (uid, size, False, initial_for(name))
     cached = caches.AVATAR_DISC.get(key)
     if cached is not None:
         return cached

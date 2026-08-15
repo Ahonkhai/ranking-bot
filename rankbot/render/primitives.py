@@ -323,6 +323,61 @@ def draw_tracked(base, xy, text: str, font, fill, tracking: int) -> None:
         x += text_size(font, ch)[0] + tracking
 
 
+def _leaf_polygon(cx, cy, length, width, rotation):
+    """An almond leaf as a polygon, so it can be rotated without a resample."""
+    points = []
+    steps = 14
+    for i in range(steps):
+        a = 2 * math.pi * i / steps
+        # Taper both ends to a point rather than leaving a plain ellipse.
+        x = (length / 2) * math.cos(a)
+        y = (width / 2) * math.sin(a) * abs(math.cos(a / 2)) ** 0.6
+        px = cx + x * math.cos(rotation) - y * math.sin(rotation)
+        py = cy + x * math.sin(rotation) + y * math.cos(rotation)
+        points.append((px, py))
+    return points
+
+
+@lru_cache(maxsize=16)
+def laurel_wreath(d: int, metal: tuple, gap_deg: int = 74, leaves: int = 11):
+    """Two laurel branches sweeping up either side of a circle of diameter `d`.
+
+    Returns an RGBA layer sized to the wreath; composite it centred on the
+    avatar. Deterministic, so it is built once per (size, metal).
+    """
+    light, mid, deep = metal
+    pad = max(6, int(d * 0.17))
+    size = d + pad * 2
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    dr = ImageDraw.Draw(layer)
+    cx = cy = size / 2
+    ring = d / 2 + pad * 0.34
+
+    for side in (-1, 1):
+        start, end = 90.0, 90.0 + side * (180 - gap_deg / 2)
+        for i in range(leaves):
+            t = i / (leaves - 1)
+            angle = math.radians(start + (end - start) * t)
+            # Leaves shrink towards the tip of each branch, as real laurel does.
+            scale = 1.0 - 0.38 * t
+            length = d * 0.20 * scale
+            width = d * 0.085 * scale
+            lx = cx + math.cos(angle) * ring
+            ly = cy + math.sin(angle) * ring
+            rotation = angle + math.pi / 2 + side * math.radians(26)
+            shade = mid if i % 2 else light
+            alpha = int(235 - 40 * t)
+            dr.polygon(_leaf_polygon(lx, ly, length, width, rotation),
+                       fill=(*shade, alpha))
+
+        # The stem the leaves grow from.
+        arc_box = [cx - ring, cy - ring, cx + ring, cy + ring]
+        a0, a1 = (start, end) if side > 0 else (end, start)
+        dr.arc(arc_box, a0, a1, fill=(*deep, 190), width=max(1, int(d * 0.012)))
+
+    return layer
+
+
 @lru_cache(maxsize=16)
 def light_burst(size: tuple, radius: int, color: tuple = (198, 162, 86),
                 rays: int = 26, seed: int = 7):

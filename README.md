@@ -39,7 +39,7 @@ read the admin list (for the 👑 crowns) and see messages (for member indexing)
 | `/myrank` | Your rank card |
 | `/rank` | Reply to a member's message for their card |
 | `/rank @user` | Someone else's card by handle |
-| `/top3` | Quick text shoutout |
+| `/top3` | Podium image of the top three, with a VIEW ALL button |
 | `/history` | Your recent entries and who awarded them |
 | `/give 500 @user` | Send some of your own points (set `ALLOW_TRANSFERS=0` to disable) |
 | `/stats` | Season summary |
@@ -134,6 +134,22 @@ By default the bar measures progress *within* the current level, so it empties
 on every level-up and the two numbers under it are exactly the pair the
 percentage is computed from. Set `XP_BAR_CUMULATIVE=1` for lifetime XP against
 the next level's full requirement instead.
+
+## The top-three podium
+
+`/top3` renders a podium: second on the left, first raised in the centre under
+a laurel wreath and crown, third on the right. Ties keep their shared rank, so
+two members level on points both stand on gold.
+
+The laurel is drawn as polygons in `primitives.laurel_wreath()` rather than
+taken from a font — arrow and ornament glyph coverage is inconsistent, and a
+missing glyph would render as a blank box.
+
+The drawn "VIEW ALL" pill is backed by a real inline button that swaps the
+message for the full leaderboard, so it isn't decoration. Like the board, an
+unchanged podium is re-sent by `file_id` rather than re-rendered.
+
+---
 
 ### Rank change
 

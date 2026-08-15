@@ -2,15 +2,16 @@
 
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .. import avatars, caches, cards, config, store
 from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
                         find_amount)
-from ..render import make_rank_card
+from ..render import make_rank_card, make_top3_image
 from . import boards
-from .common import cooled_down, ensure_group, reply, render, touch_actor, usage
+from .common import (cooled_down, ensure_group, fingerprint, reply, render,
+                     touch_actor, usage)
 
 log = logging.getLogger("rankbot.public")
 
@@ -159,17 +160,43 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A podium image: second left, first raised in the centre, third right."""
     if not await ensure_group(update):
         return
     touch_actor(update)
-    board = store.standings(update.effective_chat.id)[:3]
+    chat = update.effective_chat
+    board = store.standings(chat.id)[:3]
     if not board:
         await reply(update, "No one is on the board yet.")
         return
-    lines = ["🏆 <b>Top 3</b>", ""]
-    for i, row in enumerate(board):
-        lines.append(f"{rank_emoji(i + 1)} <b>{esc(row['name'])}</b> — ${fmt(row['balance'])}")
-    await reply(update, "\n".join(lines))
+
+    wait = cooled_down(update, "top3")
+    if wait:
+        await reply(update, f"Easy — try again in {wait:.0f}s.")
+        return
+
+    rows = [{"rank": r["rank"], "user_id": r["user_id"], "name": r["name"],
+             "balance": r["balance"]} for r in board]
+
+    # Same file_id reuse as the board: an unchanged podium costs one API call.
+    key = (chat.id, fingerprint("top3", rows, store.current_season(chat.id),
+                                store.now_iso()[:10]))
+    photo = caches.BOARD_FILE_IDS.get(key)
+    cached = photo is not None
+    if not cached:
+        pics = await avatars.fetch_many(context.bot, [r["user_id"] for r in rows])
+        photo = await render(make_top3_image, rows, pics)
+
+    # The drawn "VIEW ALL" pill is backed by a real button rather than being
+    # decoration — it swaps this message for the full leaderboard.
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("VIEW ALL", callback_data="lb:season:1")]])
+
+    msg = await update.effective_message.reply_photo(
+        photo=photo, caption="🏆 <b>Top 3</b>", parse_mode="HTML",
+        reply_markup=keyboard)
+    if not cached and msg and msg.photo:
+        caches.BOARD_FILE_IDS.set(key, msg.photo[-1].file_id)
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
