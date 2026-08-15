@@ -75,6 +75,26 @@ async def _post_init(app: Application) -> None:
     except Exception:
         log.exception("could not publish the command menu")
 
+    # Privacy mode silently starves the member index: with it on, Telegram
+    # only delivers commands, replies to the bot and mentions, so ordinary
+    # chatter never reaches observe_message and @handle lookups keep failing
+    # for people who have obviously been talking.
+    try:
+        me = await app.bot.get_me()
+        if not me.can_read_all_group_messages:
+            log.warning(
+                "Privacy mode is ON for @%s — Telegram will only deliver "
+                "commands, replies and mentions, so members cannot be indexed "
+                "from ordinary messages. Fix it either way: promote the bot to "
+                "group admin (admins receive everything), or @BotFather "
+                "/setprivacy -> Disable, then remove and re-add the bot to the "
+                "group — the setting only applies on re-join.",
+                me.username)
+        else:
+            log.info("privacy mode is off; member indexing is active")
+    except Exception:
+        log.exception("could not check privacy mode")
+
     notice = migrate.pending_notice()
     if notice:
         log.warning(notice)

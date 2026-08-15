@@ -23,8 +23,21 @@ pip install -r requirements.txt
 BOT_TOKEN="your_token_here" python bot.py
 ```
 
-**4. Add it to your group** as a member, then promote it to **admin** so it can
-read the admin list (for the 👑 crowns) and see messages (for member indexing).
+**4. Add it to your group**, then **promote it to admin**. This is not optional:
+
+- it needs the admin list to draw the 👑 crowns, and
+- Telegram's *privacy mode* is on by default, which means a non-admin bot only
+  receives commands, replies to itself and mentions — never ordinary chatter.
+  Without admin, members are never indexed and `/rank @handle` keeps failing
+  for people who have obviously been talking.
+
+Admin bots receive every message regardless of the privacy setting. If you'd
+rather not make it an admin, turn privacy off instead: @BotFather →
+`/setprivacy` → your bot → **Disable**, then **remove and re-add the bot to the
+group** — the setting only applies on re-join.
+
+The bot logs a warning at startup when privacy mode would starve the index, so
+check the deploy log if `@handle` lookups aren't finding anyone.
 
 ---
 
