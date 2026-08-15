@@ -18,7 +18,7 @@ import random
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 _FONT_DIR = Path(__file__).resolve().parents[2] / "fonts"
 
@@ -348,6 +348,35 @@ def radial_glow(size: tuple, color: tuple, opacity: int = 90, falloff: float = 2
     return layer
 
 
+@lru_cache(maxsize=8)
+def vignette(size: tuple, strength: int = 120, reach: float = 1.28):
+    """Darkened corners, so the eye lands in the middle of the frame."""
+    small = 96
+    mask = Image.new("L", (small, small), 0)
+    px = mask.load()
+    half = small / 2
+    for y in range(small):
+        dy = (y - half) / half
+        for x in range(small):
+            dx = (x - half) / half
+            d = min(1.0, math.hypot(dx, dy) / reach)
+            px[x, y] = int(strength * d ** 2.4)
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    layer.putalpha(mask.resize(size, Image.BICUBIC))
+    return layer
+
+
+def reflect(source, fade_to: float = 0.42, opacity: int = 70):
+    """A fading mirror image, for standing something on a polished floor."""
+    w, h = source.size
+    flipped = source.transpose(Image.FLIP_TOP_BOTTOM)
+    keep = max(1, int(h * fade_to))
+    flipped = flipped.crop((0, 0, w, keep))
+    ramp = vgradient((w, keep), (opacity, opacity, opacity), (0, 0, 0)).convert("L")
+    flipped.putalpha(ImageChops.multiply(flipped.getchannel("A"), ramp))
+    return flipped
+
+
 @lru_cache(maxsize=32)
 def padlock_img(w: int, color: tuple = (30, 24, 10)):
     """Small padlock glyph, drawn so it can't fall back to a missing emoji."""
@@ -409,6 +438,12 @@ def laurel_wreath(d: int, metal: tuple, gap_deg: int = 78, leaves: int = 13):
             alpha = int(235 - 40 * t)
             dr.polygon(_leaf_polygon(lx, ly, length, width, rotation),
                        fill=(*shade, alpha))
+            # A vein down each leaf, so the wreath reads as foliage rather
+            # than a ring of flat lozenges.
+            vx = math.cos(rotation) * length * 0.36
+            vy = math.sin(rotation) * length * 0.36
+            dr.line([(lx - vx, ly - vy), (lx + vx, ly + vy)],
+                    fill=(*deep, int(alpha * 0.55)), width=max(1, int(width * 0.14)))
 
         # The stem the leaves grow from.
         arc_box = [cx - ring, cy - ring, cx + ring, cy + ring]

@@ -5,17 +5,19 @@ on the right — the arrangement everyone already reads as a ranking, so the
 order is legible before a single number is.
 """
 
+from functools import lru_cache
 from io import BytesIO
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from .. import config
 from .avatar import place_avatar
 from .palette import GOLD_M, HAIR, INK, MUTE, rank_metal
 from .primitives import (composite_at, crown_img, draw_tracked, fit_text,
                          get_font, gradient_text_img, laurel_wreath,
-                         metal_badge, padlock_img, radial_glow, rounded_mask,
-                         soft_shadow, text_size, tracked_width, vgradient)
+                         metal_badge, padlock_img, radial_glow, reflect,
+                         rounded_mask, soft_shadow, text_size, tracked_width,
+                         vgradient, vignette)
 
 S = 2
 W, H = 768 * S, 450 * S      # the reference's landscape proportions
@@ -45,47 +47,76 @@ def _shade(rgb, factor):
     return tuple(max(0, min(255, int(c * factor))) for c in rgb)
 
 
-def _cylinder(base, cx, top, height, metal):
-    """A podium drum: elliptical top face, straight sides, rounded foot.
+FACE_H = 34 * S
 
-    Drawn as one silhouette filled with a vertical gradient, so the body and
-    the curved foot share an edge and it reads as a solid — rather than a slab
-    with a disc balanced on top of it.
+
+@lru_cache(maxsize=16)
+def _drum(height: int, metal: tuple):
+    """A podium drum as a standalone RGBA image.
+
+    Built whole rather than painted straight onto the card so the same pixels
+    can be mirrored into the floor reflection. Cached: there are only ever
+    three of these per render, and they never change.
     """
     light, mid, deep = metal
     w = PEDESTAL_W
-    face_h = 34 * S
-    x0 = cx - w // 2
 
     sil = Image.new("L", (w, height), 0)
     sd = ImageDraw.Draw(sil)
-    sd.ellipse([0, 0, w - 1, face_h - 1], fill=255)
-    sd.rectangle([0, face_h // 2, w - 1, height - face_h // 2], fill=255)
-    sd.ellipse([0, height - face_h, w - 1, height - 1], fill=255)
+    sd.ellipse([0, 0, w - 1, FACE_H - 1], fill=255)
+    sd.rectangle([0, FACE_H // 2, w - 1, height - FACE_H // 2], fill=255)
+    sd.ellipse([0, height - FACE_H, w - 1, height - 1], fill=255)
 
-    body = vgradient((w, height), _shade(deep, 0.76), _shade(deep, 0.24)).convert("RGBA")
-    body.putalpha(sil)
+    drum = vgradient((w, height), _shade(deep, 0.76), _shade(deep, 0.24)).convert("RGBA")
+    drum.putalpha(sil)
+    dd = ImageDraw.Draw(drum)
 
-    sh, pad = soft_shadow((w, height), face_h // 2, blur=8 * S, opacity=120)
-    composite_at(base, sh, x0 - pad, top - pad + 6 * S)
-    composite_at(base, body, x0, top)
+    # Specular sheen: a soft vertical band of light down the left of the drum,
+    # as a curved metal surface catches it.
+    sheen = Image.new("L", (w, height), 0)
+    ImageDraw.Draw(sheen).ellipse(
+        [int(w * 0.14), FACE_H // 2, int(w * 0.40), height - FACE_H // 2], fill=46)
+    sheen = sheen.filter(ImageFilter.GaussianBlur(9 * S))
+    glint = Image.new("RGBA", (w, height), (*light, 0))
+    glint.putalpha(ImageChops.multiply(sheen, sil))
+    drum.alpha_composite(glint)
 
     # Lit top surface.
-    face = Image.new("RGBA", (w, face_h), (0, 0, 0, 0))
-    fd = ImageDraw.Draw(face)
-    fd.ellipse([0, 0, w - 1, face_h - 1], fill=(*_shade(mid, 0.50), 255))
-    fd.ellipse([int(w * 0.10), int(face_h * 0.18),
-                int(w * 0.90), int(face_h * 0.82)],
+    dd.ellipse([0, 0, w - 1, FACE_H - 1], fill=(*_shade(mid, 0.50), 255))
+    dd.ellipse([int(w * 0.10), int(FACE_H * 0.18),
+                int(w * 0.90), int(FACE_H * 0.82)],
                fill=(*_shade(mid, 0.62), 255))
-    fd.ellipse([0, 0, w - 1, face_h - 1], outline=(*_shade(light, 0.62), 150),
+    dd.ellipse([0, 0, w - 1, FACE_H - 1], outline=(*_shade(light, 0.62), 150),
                width=max(1, S))
-    composite_at(base, face, x0, top)
 
-    # A hairline down each side lifts the drum off the background.
-    dr = ImageDraw.Draw(base)
-    for x in (x0, x0 + w - 1):
-        dr.line([x, top + face_h // 2, x, top + height - face_h // 2],
+    # Rim light along the leading edge of the foot.
+    dd.arc([0, height - FACE_H, w - 1, height - 1], 20, 160,
+           fill=(*_shade(mid, 0.85), 120), width=max(1, S))
+    for x in (0, w - 1):
+        dd.line([x, FACE_H // 2, x, height - FACE_H // 2],
                 fill=(*_shade(mid, 0.7), 80), width=max(1, S))
+    return drum
+
+
+def _cylinder(base, cx, top, height, metal):
+    """Place a drum, its contact shadow and its reflection on the floor."""
+    w = PEDESTAL_W
+    x0 = cx - w // 2
+    drum = _drum(height, metal)
+
+    # Contact shadow: tight and dark where the drum meets the floor, which is
+    # what actually seats an object rather than leaving it hovering.
+    contact = Image.new("RGBA", (w, FACE_H), (0, 0, 0, 0))
+    ImageDraw.Draw(contact).ellipse([int(w * 0.04), 0, int(w * 0.96), FACE_H - 1],
+                                    fill=(0, 0, 0, 150))
+    contact = contact.filter(ImageFilter.GaussianBlur(7 * S))
+    composite_at(base, contact, x0, top + height - FACE_H // 2)
+
+    sh, pad = soft_shadow((w, height), FACE_H // 2, blur=8 * S, opacity=110)
+    composite_at(base, sh, x0 - pad, top - pad + 6 * S)
+    # Mirrored from the drum's lowest point so the two meet without a seam.
+    composite_at(base, reflect(drum, fade_to=0.42, opacity=78), x0, top + height)
+    composite_at(base, drum, x0, top)
 
 
 def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
@@ -179,6 +210,9 @@ def make_top3_image(rows: list[dict], avatars: dict | None = None) -> BytesIO:
         message = "No one is on the board yet"
         tw, _, b = text_size(f, message)
         draw.text((W / 2 - tw / 2 - b[0], H / 2), message, font=f, fill=MUTE)
+
+    # Vignette last, so the corners fall away and the eye lands on the podium.
+    composite_at(img, vignette((W, H), strength=58, reach=1.38), 0, 0)
 
     # Containing hairline, so the card has an edge on any chat background.
     draw.rounded_rectangle([3 * S, 3 * S, W - 3 * S - 1, H - 3 * S - 1],
