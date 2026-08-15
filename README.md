@@ -249,8 +249,10 @@ even if two awards race.
 
 Consequences worth knowing:
 
-- One award can unlock several tiers at once — `/setcash 300000` on a new member
-  announces all seven they passed, rather than only the highest.
+- One award can unlock several tiers at once, but only the **highest** is
+  announced: `/setcash 400000` on a new member says "Whale" and nothing else.
+  The six tiers beneath it are recorded and show up in `/achievements` — seven
+  lines in the chat would bury the one that means something.
 - Badges are permanent. A deduction, an `/undo`, or a new season lowers the
   balance but never takes an achievement back, and re-earning it stays quiet.
 - They're per chat, like everything else on the board.

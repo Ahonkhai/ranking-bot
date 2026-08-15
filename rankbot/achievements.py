@@ -80,6 +80,16 @@ def check(chat_id: int, user_id: int) -> list[Achievement]:
     return fresh
 
 
+def headline(unlocked: list[Achievement]) -> Achievement | None:
+    """The single tier worth announcing when several unlock at once.
+
+    Reaching $400,000 in one go earns everything below it, and all of that is
+    recorded — but listing seven lines buries the one that actually means
+    something. The rest stay visible in /achievements.
+    """
+    return max(unlocked, key=lambda a: a.threshold, default=None)
+
+
 def held_by(chat_id: int, user_id: int) -> list[Achievement]:
     """Everything this member has unlocked, in tier order."""
     codes = store.recorded_achievements(chat_id, user_id)

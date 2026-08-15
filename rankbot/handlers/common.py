@@ -150,14 +150,19 @@ async def announce_achievements(update, chat_id: int, user_id: int, name: str):
     except Exception:
         log.exception("achievement check failed for %s in %s", user_id, chat_id)
         return
-    if not unlocked:
+    top = achievements.headline(unlocked)
+    if top is None:
         return
 
-    plural = "s" if len(unlocked) > 1 else ""
-    lines = [f"🏆 <b>Achievement{plural} unlocked!</b>", "", f"<b>{esc(name)}</b>"]
-    for a in unlocked:
-        lines.append(f"{a.emoji} <b>{esc(a.name)}</b> — reached ${a.threshold:,}")
-    await reply(update, "\n".join(lines))
+    # Only the highest tier is announced. A big award earns everything beneath
+    # it too and all of that is recorded, but listing seven lines buries the
+    # one that means something — /achievements shows the full set.
+    await reply(update, "\n".join([
+        "🏆 <b>Achievement unlocked!</b>",
+        "",
+        f"<b>{esc(name)}</b>",
+        f"{top.emoji} <b>{esc(top.name)}</b> — reached ${top.threshold:,}",
+    ]))
 
 
 def usage(example: str, reply_hint: str = "") -> str:

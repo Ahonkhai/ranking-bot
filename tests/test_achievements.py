@@ -124,3 +124,30 @@ def test_the_log_records_what_they_held_at_the_time(fresh_db):
     entries = store.achievement_log(CHAT, ALICE)
     assert [e["code"] for e in entries] == ["first_bag", "four_figures"]
     assert all(e["balance_at"] == 7_500 for e in entries)
+
+
+def test_only_the_highest_tier_is_announced(fresh_db):
+    """A big award earns everything beneath it, but the message names one."""
+    store.set_balance(CHAT, ALICE, 400_000, ADMIN)
+    unlocked = achievements.check(CHAT, ALICE)
+    assert len(unlocked) == 7                     # all recorded
+    assert achievements.headline(unlocked).code == "whale"   # one announced
+
+
+def test_headline_of_a_single_unlock_is_itself(fresh_db):
+    store.award(CHAT, ALICE, 1_000, ADMIN)
+    unlocked = achievements.check(CHAT, ALICE)
+    assert achievements.headline(unlocked).code == "first_bag"
+
+
+def test_headline_of_nothing_is_none():
+    assert achievements.headline([]) is None
+
+
+def test_the_quieter_tiers_are_still_held(fresh_db):
+    """Not announcing them must not mean not awarding them."""
+    store.set_balance(CHAT, ALICE, 400_000, ADMIN)
+    achievements.check(CHAT, ALICE)
+    assert codes(achievements.held_by(CHAT, ALICE)) == [
+        "first_bag", "four_figures", "high_roller", "big_money",
+        "money_maker", "six_figures", "whale"]
