@@ -5,7 +5,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from .. import achievements, avatars, caches, cards, config, store
+from .. import achievements, avatars, caches, cards, config, roasts, store
 from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
                         find_amount)
 from ..render import make_rank_card, make_top3_image
@@ -20,7 +20,7 @@ HELP = """👋 <b>Ranking Bot</b>
 <b>Everyone</b>
 /leaderboard — the ranked board (paged, with week / month / all-time views)
 /myrank — your rank card
-/rank @user — someone else's card
+/rank — your card, or reply / @tag for someone else's
 /top3 — quick text shoutout
 /history — your last entries, and who awarded them
 /stats — season summary
@@ -94,12 +94,15 @@ async def cb_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await boards.edit_board(update, context, scope, page)
 
 
-NOT_FOUND = "❌ I couldn't find that member in the ranking data."
-
-
-async def _send_card(update, context, user_id: int, name: str, header: str):
+async def _send_card(update, context, user_id: int, name: str, header: str,
+                     self_view: bool = False):
     """Build and send one rank card. The image is the response — the caption
-    stays to a single line."""
+    stays to a single line.
+
+    A member with no ledger entry has no card to draw, so they get a roast
+    instead: second person when you're asking about yourself, third person when
+    you're asking about somebody else.
+    """
     chat = update.effective_chat
     chat_id = chat.id
 
@@ -107,7 +110,8 @@ async def _send_card(update, context, user_id: int, name: str, header: str):
     card = cards.build(chat_id, user_id, name, header=header,
                        is_admin=user_id in admin_set)
     if card is None:
-        await reply(update, NOT_FOUND)
+        await reply(update, esc(roasts.get_unranked_self_response() if self_view
+                                else roasts.get_unranked_user_response(name)))
         return
 
     avatar = await avatars.fetch_avatar_bytes(context.bot, user_id)
@@ -136,27 +140,41 @@ async def cmd_myrank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply(update, f"Easy — try again in {wait:.0f}s.")
         return
     user = update.effective_user
-    await _send_card(update, context, user.id, display_name(user), "MY RANK")
+    await _send_card(update, context, user.id, display_name(user), "MY RANK",
+                     self_view=True)
 
 
 async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply to a member with /rank, or name them: /rank @username."""
+    """Your own rank, or someone else's by reply or @handle.
+
+    Bare `/rank` means "how am I doing?" — the same question `/myrank` asks.
+    """
     if not await ensure_group(update):
         return
     touch_actor(update)
+    sender = update.effective_user
+
     target = resolve_target(update)
     if target.error:
         await reply(update, f"❌ {target.error}")
         return
-    if not target.ok:
-        await reply(update, "Reply to a member's message or use "
-                            "<code>/rank @username</code>")
-        return
+
+    if target.ok:
+        user_id, name = target.user_id, target.name
+    else:
+        user_id, name = sender.id, display_name(sender)
+
+    # Asking about yourself is second person however you got here — by naming
+    # your own handle, or by replying to your own message.
+    self_view = user_id == sender.id
+
     wait = cooled_down(update, "rank")
     if wait:
         await reply(update, f"Easy — try again in {wait:.0f}s.")
         return
-    await _send_card(update, context, target.user_id, target.name, "MEMBER RANK")
+    await _send_card(update, context, user_id, name,
+                     "MY RANK" if self_view else "MEMBER RANK",
+                     self_view=self_view)
 
 
 async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):

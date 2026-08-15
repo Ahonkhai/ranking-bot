@@ -50,7 +50,7 @@ check the deploy log if `@handle` lookups aren't finding anyone.
 | `/leaderboard` | The ranked board, paged, with week / month / all-time views |
 | `/leaderboard week` | Same board over a time window (`week`, `month`, `alltime`) |
 | `/myrank` | Your rank card |
-| `/rank` | Reply to a member's message for their card |
+| `/rank` | Your own card; reply to a member for theirs |
 | `/rank @user` | Someone else's card by handle |
 | `/top3` | Podium image of the top three, with a VIEW ALL button |
 | `/history` | Your recent entries and who awarded them |
@@ -70,6 +70,11 @@ check the deploy log if `@handle` lookups aren't finding anyone.
 | `/newseason` | Close the season, start the next, keep all history |
 | `/resetboard` | Choose a season reset or a permanent wipe |
 | `/adoptlegacy` | One-shot import of an old `data.json` into this chat |
+
+Members with no ledger entry have no card to draw, so `/rank` roasts them
+instead — second person for yourself, third person for anyone else. Someone
+legitimately sitting on $0 has an entry and still gets their card; the pool
+lives in [`rankbot/roasts.py`](rankbot/roasts.py).
 
 Every command works as a **reply** to the member's message, which is the most
 reliable way to name someone — handles change, replies don't. Amounts accept
