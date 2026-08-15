@@ -282,9 +282,13 @@ Consequences worth knowing:
   never takes one back, and re-earning it stays quiet.
 - After any award the **top of the board is swept**, not just whoever an admin
   targeted: a rank can improve because someone above was reset or overtaken by a
-  third party.
+  third party. Those awards are made **silently** — when a board grows past a
+  tier's size requirement every member in it qualifies at the same instant, and
+  announcing that is a wall of identical lines rather than news. Only the member
+  an admin actually acted on gets a message.
 - Champion is checked by a **daily job**, since no write would ever trigger a
-  milestone that comes true purely with the passage of time.
+  milestone that comes true purely with the passage of time. It is the only
+  thing that job announces.
 
 ---
 

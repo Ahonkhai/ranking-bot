@@ -268,3 +268,18 @@ def test_held_by_is_ordered_easiest_first(fresh_db):
     achievements.check(CHAT, ALICE)
     rarities = [a.rarity for a in achievements.held_by(CHAT, ALICE)]
     assert rarities == sorted(rarities)
+
+
+def test_the_sweep_still_awards_even_though_it_stays_quiet(fresh_db):
+    """The 'Also unlocked' message was removed as noise, but the badges behind
+    it must still be granted — otherwise climbing by someone else's reset
+    silently earns nothing at all."""
+    crowd(12)
+    store.award(CHAT, BOB, 900_000, ADMIN)
+    store.award(CHAT, ALICE, 500_000, ADMIN)
+    achievements.check(CHAT, ALICE)
+    achievements.check(CHAT, BOB)
+
+    store.set_balance(CHAT, BOB, 0, ADMIN)      # ALICE inherits #1
+    achievements.check_board(CHAT, skip=BOB)
+    assert "number_one" in codes(achievements.held_by(CHAT, ALICE))

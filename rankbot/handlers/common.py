@@ -163,25 +163,15 @@ async def announce_achievements(update, chat_id: int, user_id: int, name: str):
         ]))
 
     # A rank can improve without that member's balance moving — someone above
-    # them was reset, or overtaken by a third party — so whoever the admin
-    # targeted isn't the only person who might have just climbed.
+    # them was reset, or overtaken by a third party — so the rest of the board
+    # is still swept and awarded. Silently, though: when a board grows past a
+    # tier's size requirement every member in it qualifies at the same moment,
+    # and announcing that is a wall of identical lines rather than news. The
+    # badges show up in /achievements.
     try:
-        others = achievements.check_board(chat_id, skip=user_id)
+        achievements.check_board(chat_id, skip=user_id)
     except Exception:
         log.exception("board achievement sweep failed for %s", chat_id)
-        return
-    if not others:
-        return
-
-    lines = ["🏆 <b>Also unlocked</b>", ""]
-    for other_id, unlocked_by_them in others:
-        best = achievements.headline(unlocked_by_them)
-        if best is None:
-            continue
-        who = store.member_name(chat_id, other_id)
-        lines.append(f"<b>{esc(who)}</b> — {best.emoji} {esc(best.name)}")
-    if len(lines) > 2:
-        await reply(update, "\n".join(lines))
 
 
 def usage(example: str, reply_hint: str = "") -> str:

@@ -111,16 +111,22 @@ async def achievements_job(context) -> None:
             continue
 
         caches.invalidate_chat(chat_id)
-        lines = ["🏆 <b>Achievement unlocked!</b>", ""]
-        for user_id, earned in unlocked:
-            best = achievements.headline(earned)
-            if best is None:
-                continue
-            who = store.member_name(chat_id, user_id)
-            lines.append(f"<b>{html.escape(who)}</b> — {best.emoji} "
-                         f"{html.escape(best.name)} · {html.escape(best.requirement)}")
-        if len(lines) <= 2:
+
+        # Everything the sweep found is awarded, but only Champion is worth
+        # interrupting the chat for. Rank tiers all trip at once when a board
+        # grows past a size requirement, which is a wall of identical lines
+        # rather than news — those stay quiet and appear in /achievements.
+        champions = [(user_id, earned) for user_id, earned in unlocked
+                     if any(a.code == achievements.CHAMPION.code for a in earned)]
+        if not champions:
             continue
+
+        lines = ["🏆 <b>Achievement unlocked!</b>", ""]
+        for user_id, _earned in champions:
+            who = store.member_name(chat_id, user_id)
+            lines.append(f"<b>{html.escape(who)}</b> — {achievements.CHAMPION.emoji} "
+                         f"{html.escape(achievements.CHAMPION.name)} · "
+                         f"{html.escape(achievements.CHAMPION.requirement)}")
         try:
             await context.bot.send_message(chat_id=chat_id, text="\n".join(lines),
                                            parse_mode="HTML")
