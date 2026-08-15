@@ -323,6 +323,46 @@ def draw_tracked(base, xy, text: str, font, fill, tracking: int) -> None:
         x += text_size(font, ch)[0] + tracking
 
 
+@lru_cache(maxsize=32)
+def radial_glow(size: tuple, color: tuple, opacity: int = 90, falloff: float = 2.2):
+    """A soft elliptical pool of light.
+
+    Built at low resolution and scaled up — the falloff is smooth enough that
+    the interpolation is invisible, and it keeps the per-pixel Python loop to a
+    few thousand iterations instead of millions.
+    """
+    small = 96
+    mask = Image.new("L", (small, small), 0)
+    px = mask.load()
+    half = small / 2
+    for y in range(small):
+        dy = (y - half) / half
+        for x in range(small):
+            dx = (x - half) / half
+            d = math.hypot(dx, dy)
+            if d >= 1.0:
+                continue
+            px[x, y] = int(opacity * (1.0 - d) ** falloff)
+    layer = Image.new("RGBA", size, (*color, 0))
+    layer.putalpha(mask.resize(size, Image.BICUBIC))
+    return layer
+
+
+@lru_cache(maxsize=32)
+def padlock_img(w: int, color: tuple = (30, 24, 10)):
+    """Small padlock glyph, drawn so it can't fall back to a missing emoji."""
+    h = int(w * 1.12)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    body_top = int(h * 0.44)
+    d.rounded_rectangle([int(w * 0.12), body_top, int(w * 0.88), h - 1],
+                        radius=max(2, int(w * 0.14)), fill=(*color, 255))
+    shackle = max(2, int(w * 0.14))
+    d.arc([int(w * 0.26), int(h * 0.10), int(w * 0.74), int(h * 0.68)],
+          180, 360, fill=(*color, 255), width=shackle)
+    return img
+
+
 def _leaf_polygon(cx, cy, length, width, rotation):
     """An almond leaf as a polygon, so it can be rotated without a resample."""
     points = []
@@ -339,19 +379,19 @@ def _leaf_polygon(cx, cy, length, width, rotation):
 
 
 @lru_cache(maxsize=16)
-def laurel_wreath(d: int, metal: tuple, gap_deg: int = 74, leaves: int = 11):
+def laurel_wreath(d: int, metal: tuple, gap_deg: int = 78, leaves: int = 13):
     """Two laurel branches sweeping up either side of a circle of diameter `d`.
 
     Returns an RGBA layer sized to the wreath; composite it centred on the
     avatar. Deterministic, so it is built once per (size, metal).
     """
     light, mid, deep = metal
-    pad = max(6, int(d * 0.17))
+    pad = max(8, int(d * 0.21))
     size = d + pad * 2
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     dr = ImageDraw.Draw(layer)
     cx = cy = size / 2
-    ring = d / 2 + pad * 0.34
+    ring = d / 2 + pad * 0.40
 
     for side in (-1, 1):
         start, end = 90.0, 90.0 + side * (180 - gap_deg / 2)
@@ -359,9 +399,9 @@ def laurel_wreath(d: int, metal: tuple, gap_deg: int = 74, leaves: int = 11):
             t = i / (leaves - 1)
             angle = math.radians(start + (end - start) * t)
             # Leaves shrink towards the tip of each branch, as real laurel does.
-            scale = 1.0 - 0.38 * t
-            length = d * 0.20 * scale
-            width = d * 0.085 * scale
+            scale = 1.0 - 0.34 * t
+            length = d * 0.25 * scale
+            width = d * 0.10 * scale
             lx = cx + math.cos(angle) * ring
             ly = cy + math.sin(angle) * ring
             rotation = angle + math.pi / 2 + side * math.radians(26)
