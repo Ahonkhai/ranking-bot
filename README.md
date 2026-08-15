@@ -207,6 +207,7 @@ All optional except the token.
 | `RENDER_CONCURRENCY` | `3` | Simultaneous PIL renders. |
 | `ADMIN_TTL` | `300` | Admin-list cache lifetime. Invalidated instantly on promote/demote anyway. |
 | `AVATAR_TTL` | `3600` | Avatar cache lifetime. |
+| `AVATAR_RETRY_SECONDS` | `90` | Backoff after a failed photo download, before retrying. |
 | `BACKUP_INTERVAL_HOURS` | `6` | Snapshot cadence. |
 | `BACKUP_KEEP` | `24` | Snapshots retained on disk. |
 | `BACKUP_CHANNEL_ID` | — | Send snapshots and a daily digest here. Set this — an on-disk backup dies with the machine. |
@@ -284,6 +285,25 @@ Consequences worth knowing:
   third party.
 - Champion is checked by a **daily job**, since no write would ever trigger a
   milestone that comes true purely with the passage of time.
+
+---
+
+## Profile photos
+
+Not every member will show a photo, and there are two different reasons:
+
+- **They have none, or Telegram won't share it.** Profile photo privacy is a
+  per-user setting; `getUserProfilePhotos` simply returns nothing for those
+  members. The bot draws a gold initial instead. Nothing to fix.
+- **The download failed.** Transient, and now handled: the failure is cached
+  for `AVATAR_RETRY_SECONDS` (90s) rather than as "this member has no photo"
+  for the full `AVATAR_TTL` hour, and a board or podium rendered while a photo
+  was missing is **not** written to the `file_id` cache — otherwise one blip
+  freezes the initials into that image for hours after the problem clears.
+
+If someone's photo is persistently missing while others load, it's the first
+reason. `rankbot.avatars` logs failures at INFO with the exception type, so
+the deploy log distinguishes them.
 
 ---
 

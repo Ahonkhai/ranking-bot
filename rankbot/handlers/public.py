@@ -183,9 +183,13 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 store.now_iso()[:10]))
     photo = caches.BOARD_FILE_IDS.get(key)
     cached = photo is not None
+    worth_caching = False
     if not cached:
-        pics = await avatars.fetch_many(context.bot, [r["user_id"] for r in rows])
+        uids = [r["user_id"] for r in rows]
+        pics = await avatars.fetch_many(context.bot, uids)
         photo = await render(make_top3_image, rows, pics)
+        # Don't freeze a podium that's missing a photo it should have had.
+        worth_caching = not avatars.pending_retry(uids)
 
     # The drawn "VIEW ALL" pill is backed by a real button rather than being
     # decoration — it swaps this message for the full leaderboard.
@@ -195,7 +199,7 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.effective_message.reply_photo(
         photo=photo, caption="🏆 <b>Top 3</b>", parse_mode="HTML",
         reply_markup=keyboard)
-    if not cached and msg and msg.photo:
+    if worth_caching and msg and msg.photo:
         caches.BOARD_FILE_IDS.set(key, msg.photo[-1].file_id)
 
 

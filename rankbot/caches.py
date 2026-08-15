@@ -76,6 +76,12 @@ AVATAR_RAW = TTLCache(maxsize=config.AVATAR_RAW_MAX, ttl=config.AVATAR_TTL)
 # (user_id, diameter) -> processed circular RGBA avatar
 AVATAR_DISC = TTLCache(maxsize=config.AVATAR_DISC_MAX, ttl=config.AVATAR_TTL)
 
+# user_id -> True, for avatars whose download just failed. Separate from
+# AVATAR_RAW so a transient error expires in seconds rather than being
+# mistaken for "this member has no photo" for the full hour.
+AVATAR_MISS = TTLCache(maxsize=config.AVATAR_RAW_MAX,
+                       ttl=config.AVATAR_RETRY_SECONDS)
+
 # board fingerprint -> Telegram file_id, so an unchanged board is re-sent
 # rather than re-rendered and re-uploaded
 BOARD_FILE_IDS = TTLCache(maxsize=config.BOARD_CACHE_MAX, ttl=6 * 3600)

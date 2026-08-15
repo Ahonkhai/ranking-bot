@@ -97,6 +97,9 @@ CHAMPION_DAYS = _int("CHAMPION_DAYS", 7)
 # Cache lifetimes, seconds.
 ADMIN_TTL  = _int("ADMIN_TTL", 300)
 AVATAR_TTL = _int("AVATAR_TTL", 3600)
+# Backoff after a failed avatar download, so one blip does not look like
+# "this member has no photo" for the whole AVATAR_TTL.
+AVATAR_RETRY_SECONDS = _int("AVATAR_RETRY_SECONDS", 90)
 
 # Bounded cache sizes, entries.
 AVATAR_RAW_MAX  = _int("AVATAR_RAW_MAX", 512)

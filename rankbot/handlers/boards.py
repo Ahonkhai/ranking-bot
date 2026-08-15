@@ -116,14 +116,20 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
 
 
 async def photo_for(bot, chat, key, rows, kwargs):
-    """A file_id when this exact board has been sent before, else fresh bytes."""
+    """A file_id when this exact board has been sent before, else fresh bytes.
+
+    Returns (photo, from_cache, worth_caching). A board drawn while somebody's
+    avatar download was failing is *not* worth caching: the fingerprint doesn't
+    know an avatar is missing, so caching it would freeze the initials into
+    this board for hours after the problem cleared.
+    """
     cached = caches.BOARD_FILE_IDS.get(key)
     if cached:
-        return cached, True
+        return cached, True, False
     uids = [r["user_id"] for r in rows]
     kwargs = dict(kwargs, avatars=await avatars.fetch_many(bot, uids))
     buf = await render(make_leaderboard_image, rows, **kwargs)
-    return buf, False
+    return buf, False, not avatars.pending_retry(uids)
 
 
 def remember(key, message) -> None:
@@ -144,11 +150,13 @@ async def send_board(update, context, scope: str = "season", page: int = 1):
             parse_mode="HTML")
         return
 
-    photo, _cached = await photo_for(context.bot, chat, key, rows, kwargs)
+    photo, _from_cache, worth_caching = await photo_for(
+        context.bot, chat, key, rows, kwargs)
     msg = await update.effective_message.reply_photo(
         photo=photo, caption=caption, parse_mode="HTML",
         reply_markup=keyboard(scope, page, pages))
-    remember(key, msg)
+    if worth_caching:
+        remember(key, msg)
 
 
 async def edit_board(update, context, scope: str, page: int):
@@ -162,9 +170,10 @@ async def edit_board(update, context, scope: str, page: int):
         await query.answer("Nothing on this board yet.", show_alert=True)
         return
 
-    photo, _cached = await photo_for(context.bot, chat, key, rows, kwargs)
+    photo, _from_cache, worth_caching = await photo_for(
+        context.bot, chat, key, rows, kwargs)
     msg = await query.edit_message_media(
         media=InputMediaPhoto(media=photo, caption=caption, parse_mode="HTML"),
         reply_markup=keyboard(scope, page, pages))
-    if hasattr(msg, "photo"):
+    if worth_caching and hasattr(msg, "photo"):
         remember(key, msg)
