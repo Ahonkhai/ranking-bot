@@ -221,7 +221,7 @@ All optional except the token.
 
 ## Achievements
 
-Cash milestones, announced in the chat the moment someone crosses one:
+**Cash**
 
 | | Achievement | Reach |
 |---|---|---|
@@ -235,27 +235,55 @@ Cash milestones, announced in the chat the moment someone crosses one:
 | 💠 | Mega Whale | $500,000 |
 | 🏛️ | Millionaire | $1,000,000 |
 
-Edit the `TIERS` list in [`rankbot/achievements.py`](rankbot/achievements.py) to
-retune them. The `code` on each tier is what gets stored, so emoji, wording and
-thresholds can all change freely — but never rename a code that has already
-been awarded, or those unlocks are orphaned.
+**Rank**
+
+| | Achievement | Requirement | Needs a board of |
+|---|---|---|---|
+| 🥉 | Top 10 | Reach the top 10 | 10+ |
+| 🥈 | Top 5 | Reach the top 5 | 5+ |
+| 🥇 | Podium | Reach the top 3 | 3+ |
+| ⚔️ | Challenger | Reach #2 | 2+ |
+| 👑 | Number One | Reach #1 | 2+ |
+| 🏆 | Champion | Hold #1 for `CHAMPION_DAYS` (default 7) | 2+ |
+
+Rank tiers require a board big enough for them to mean something — otherwise
+every member of a four-person chat instantly earns Top 10 and Top 5, which is
+noise rather than an achievement. Being #1 of one earns nothing at all.
+
+Edit the `CASH_TIERS` and `RANK_TIERS` lists in
+[`rankbot/achievements.py`](rankbot/achievements.py) to retune them. The `code`
+on each tier is what gets stored, so emoji, wording, values and rarity can all
+change freely — but never rename a code that has already been awarded, or those
+unlocks are orphaned.
+
+### How it works
 
 An unlock is the one thing in this bot that is **recorded rather than derived**.
 Everything else is a query over the ledger, but "have we already told the group
 about this?" isn't in the ledger, and re-announcing every time a balance wobbles
 across a threshold would be worse than storing one row. The table's primary key
-is `(chat_id, user_id, code)`, which is what makes a double-announce impossible
-even if two awards race.
+is `(chat_id, user_id, code)`, which makes a double-announce impossible even if
+two awards race.
+
+**Champion** is the exception that needs no new state either: `held_rank_since()`
+samples `ranks_as_of()` at daily checkpoints across the window, so a "holding"
+streak is reconstructed from the ledger rather than tracked in a column that
+could drift. A board younger than the window correctly fails — you can't have
+held #1 for a week if the board is two days old.
 
 Consequences worth knowing:
 
-- One award can unlock several tiers at once, but only the **highest** is
-  announced: `/setcash 400000` on a new member says "Whale" and nothing else.
-  The six tiers beneath it are recorded and show up in `/achievements` — seven
-  lines in the chat would bury the one that means something.
-- Badges are permanent. A deduction, an `/undo`, or a new season lowers the
-  balance but never takes an achievement back, and re-earning it stays quiet.
-- They're per chat, like everything else on the board.
+- One award can unlock several tiers at once, but only the **highest by rarity**
+  is announced. `/setcash 400000` says "Whale", or "Number One" if it also took
+  the top spot — reaching #1 is the story, the cash tier is a footnote. The rest
+  are recorded and show up in `/achievements`.
+- Badges are permanent. A deduction, an `/undo`, being overtaken, or a new season
+  never takes one back, and re-earning it stays quiet.
+- After any award the **top of the board is swept**, not just whoever an admin
+  targeted: a rank can improve because someone above was reset or overtaken by a
+  third party.
+- Champion is checked by a **daily job**, since no write would ever trigger a
+  milestone that comes true purely with the passage of time.
 
 ---
 

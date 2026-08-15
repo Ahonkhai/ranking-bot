@@ -307,16 +307,27 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     held = achievements.held_by(chat_id, user_id)
     balance = store.balance(chat_id, user_id)
+    rank, _total = store.rank_of(chat_id, user_id)
 
     lines = [f"🏆 <b>{esc(name)}</b> — {len(held)}/{len(achievements.TIERS)} unlocked", ""]
     if held:
-        lines.extend(f"{a.emoji} <b>{esc(a.name)}</b> — ${fmt(a.threshold)}" for a in held)
+        lines.extend(f"{a.emoji} <b>{esc(a.name)}</b> — {esc(a.requirement)}"
+                     for a in held)
     else:
         lines.append("<i>Nothing unlocked yet.</i>")
 
-    upcoming = achievements.next_tier(balance)
-    if upcoming:
+    # What they're climbing towards, on both ladders.
+    goals = []
+    cash_next = achievements.next_tier(balance)
+    if cash_next:
+        goals.append(f"{cash_next.emoji} <b>{esc(cash_next.name)}</b> — "
+                     f"${fmt(cash_next.value - balance)} to go")
+    rank_next = achievements.next_rank_tier(rank)
+    if rank_next:
+        goals.append(f"{rank_next.emoji} <b>{esc(rank_next.name)}</b> — "
+                     f"{esc(rank_next.requirement)}")
+    if goals:
         lines.append("")
-        lines.append(f"Next: {upcoming.emoji} <b>{esc(upcoming.name)}</b> — "
-                     f"${fmt(upcoming.threshold - balance)} to go")
+        lines.append("<b>Next up</b>")
+        lines.extend(goals)
     await reply(update, "\n".join(lines))

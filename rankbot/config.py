@@ -91,6 +91,9 @@ XP_BAR_CUMULATIVE = _bool("XP_BAR_CUMULATIVE", False)
 # historical rank rather than a snapshot that can drift out of sync.
 RANK_CHANGE_WINDOW_HOURS = _int("RANK_CHANGE_WINDOW_HOURS", 24)
 
+# Consecutive days at #1 required for the Champion achievement.
+CHAMPION_DAYS = _int("CHAMPION_DAYS", 7)
+
 # Cache lifetimes, seconds.
 ADMIN_TTL  = _int("ADMIN_TTL", 300)
 AVATAR_TTL = _int("AVATAR_TTL", 3600)

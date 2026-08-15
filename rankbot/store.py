@@ -332,6 +332,25 @@ def history(chat_id: int, user_id: int, limit: int = 10) -> list[dict]:
     ]
 
 
+def held_rank_since(chat_id: int, user_id: int, days: int, rank: int = 1) -> bool:
+    """True when the member was at `rank` or better at every daily checkpoint
+    across the window, and still is.
+
+    Sampled from the ledger rather than tracked in a column: the ledger can
+    already reconstruct any past standing, so a "holding" streak needs no
+    extra state that could drift out of step with the scores. A board younger
+    than the window correctly fails — you can't have held it for a week.
+    """
+    if days <= 0:
+        return rank_of(chat_id, user_id)[0] == rank
+
+    for day in range(days, -1, -1):
+        at = ranks_as_of(chat_id, "season", ago_iso(days=day)).get(user_id)
+        if at is None or at > rank:
+            return False
+    return True
+
+
 def recorded_achievements(chat_id: int, user_id: int) -> set[str]:
     rows = db.get().execute(
         "SELECT code FROM achievements WHERE chat_id=? AND user_id=?",

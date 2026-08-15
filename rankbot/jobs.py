@@ -1,11 +1,12 @@
 """Scheduled work: backups, the optional decay sweep, and a liveness digest."""
 
+import html
 import logging
 import os
 import sqlite3
 from datetime import datetime
 
-from . import caches, config, db, store
+from . import achievements, caches, config, db, store
 
 log = logging.getLogger("rankbot.jobs")
 
@@ -92,6 +93,39 @@ async def decay_job(context) -> None:
         if touched:
             caches.invalidate_chat(chat_id)
             log.info("decay applied to %d members in %s", touched, chat_id)
+
+
+async def achievements_job(context) -> None:
+    """Daily sweep for milestones that come true with time rather than with a
+    write — Champion is earned by *still* being #1 after N days, so nothing in
+    the command path would ever notice it."""
+    rows = db.get().execute("SELECT chat_id FROM chats").fetchall()
+    for row in rows:
+        chat_id = row["chat_id"]
+        try:
+            unlocked = achievements.check_board(chat_id)
+        except Exception:
+            log.exception("achievement sweep failed for %s", chat_id)
+            continue
+        if not unlocked:
+            continue
+
+        caches.invalidate_chat(chat_id)
+        lines = ["🏆 <b>Achievement unlocked!</b>", ""]
+        for user_id, earned in unlocked:
+            best = achievements.headline(earned)
+            if best is None:
+                continue
+            who = store.member_name(chat_id, user_id)
+            lines.append(f"<b>{html.escape(who)}</b> — {best.emoji} "
+                         f"{html.escape(best.name)} · {html.escape(best.requirement)}")
+        if len(lines) <= 2:
+            continue
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines),
+                                           parse_mode="HTML")
+        except Exception:
+            log.exception("could not announce achievements in %s", chat_id)
 
 
 async def digest_job(context) -> None:

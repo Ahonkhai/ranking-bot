@@ -151,18 +151,37 @@ async def announce_achievements(update, chat_id: int, user_id: int, name: str):
         log.exception("achievement check failed for %s in %s", user_id, chat_id)
         return
     top = achievements.headline(unlocked)
-    if top is None:
+    if top is not None:
+        # Only the highest tier is announced. A big award earns everything
+        # beneath it too and all of that is recorded, but listing seven lines
+        # buries the one that means something — /achievements has the full set.
+        await reply(update, "\n".join([
+            "🏆 <b>Achievement unlocked!</b>",
+            "",
+            f"<b>{esc(name)}</b>",
+            f"{top.emoji} <b>{esc(top.name)}</b> — {esc(top.requirement)}",
+        ]))
+
+    # A rank can improve without that member's balance moving — someone above
+    # them was reset, or overtaken by a third party — so whoever the admin
+    # targeted isn't the only person who might have just climbed.
+    try:
+        others = achievements.check_board(chat_id, skip=user_id)
+    except Exception:
+        log.exception("board achievement sweep failed for %s", chat_id)
+        return
+    if not others:
         return
 
-    # Only the highest tier is announced. A big award earns everything beneath
-    # it too and all of that is recorded, but listing seven lines buries the
-    # one that means something — /achievements shows the full set.
-    await reply(update, "\n".join([
-        "🏆 <b>Achievement unlocked!</b>",
-        "",
-        f"<b>{esc(name)}</b>",
-        f"{top.emoji} <b>{esc(top.name)}</b> — reached ${top.threshold:,}",
-    ]))
+    lines = ["🏆 <b>Also unlocked</b>", ""]
+    for other_id, unlocked_by_them in others:
+        best = achievements.headline(unlocked_by_them)
+        if best is None:
+            continue
+        who = store.member_name(chat_id, other_id)
+        lines.append(f"<b>{esc(who)}</b> — {best.emoji} {esc(best.name)}")
+    if len(lines) > 2:
+        await reply(update, "\n".join(lines))
 
 
 def usage(example: str, reply_hint: str = "") -> str:

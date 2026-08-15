@@ -154,6 +154,10 @@ def schedule(app: Application) -> None:
     queue.run_repeating(jobs.backup_job, interval=hours * 3600, first=120,
                         name="backup")
     queue.run_daily(jobs.digest_job, time=dt.time(hour=9, minute=0), name="digest")
+    # Champion is earned by still being #1 after N days; no write would
+    # ever trigger that, so it needs a clock.
+    queue.run_daily(jobs.achievements_job, time=dt.time(hour=12, minute=0),
+                    name="achievements")
     if config.DECAY_PERCENT > 0:
         queue.run_daily(jobs.decay_job, time=dt.time(hour=4, minute=0), name="decay")
         log.info("decay enabled: %.2f%% after %d idle days",
