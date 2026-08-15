@@ -199,7 +199,16 @@ docker run -d --name ranking-bot \
   ranking-bot
 ```
 
-The volume holds `/data/rankbot.db` and `/data/backups/`.
+The mount holds `/data/rankbot.db` and `/data/backups/`.
+
+The Dockerfile deliberately has no `VOLUME` instruction — Railway's Metal
+builder rejects it and fails the build. Mount `/data` explicitly instead: a
+Railway Volume with mount path `/data`, or `-v` as above.
+
+The container starts as root so the entrypoint can take ownership of that
+mount, then drops to an unprivileged user. Attaching a volume that already has
+data means it arrives root-owned, and a build-time `USER` would be locked out
+of it.
 
 ---
 

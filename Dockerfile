@@ -20,10 +20,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Scores live outside the image so redeploys don't wipe the board.
-#   docker run -v ranking_data:/data ...
+#
+# Deliberately no `VOLUME ["/data"]`: Railway's Metal builder rejects the
+# instruction outright ("VOLUME is not supported, use Railway Volumes") and
+# fails the build, so the platform kept serving the last image that did build.
+# Nothing is lost by dropping it — VOLUME only declares an anonymous volume,
+# and an explicit mount works with or without it:
+#   Railway: attach a Volume with mount path /data
+#   Docker:  docker run -v ranking_data:/data ...
 ENV DB_PATH=/data/rankbot.db \
     DATA_FILE=/data/data.json
-VOLUME ["/data"]
 
 RUN useradd --create-home --uid 10001 rankbot \
     && mkdir -p /data \
