@@ -5,13 +5,13 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from .. import avatars, caches, cards, config, store
+from .. import achievements, avatars, caches, cards, config, store
 from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
                         find_amount)
 from ..render import make_rank_card, make_top3_image
 from . import boards
-from .common import (cooled_down, ensure_group, fingerprint, reply, render,
-                     touch_actor, usage)
+from .common import (announce_achievements, cooled_down, ensure_group,
+                     fingerprint, reply, render, touch_actor, usage)
 
 log = logging.getLogger("rankbot.public")
 
@@ -284,3 +284,39 @@ async def cmd_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<b>{esc(target.name)}</b>\n"
         f"You: ${fmt(mine)}  ·  Them: ${fmt(theirs)}"
     ))
+    # A transfer can push the recipient over a milestone.
+    await announce_achievements(update, chat_id, target.user_id, target.name)
+
+
+async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Milestones a member has unlocked, and what they're climbing towards."""
+    if not await ensure_group(update):
+        return
+    touch_actor(update)
+    chat_id = update.effective_chat.id
+
+    target = resolve_target(update)
+    if target.error:
+        await reply(update, f"❌ {target.error}")
+        return
+    if target.ok:
+        user_id, name = target.user_id, target.name
+    else:
+        user = update.effective_user
+        user_id, name = user.id, display_name(user)
+
+    held = achievements.held_by(chat_id, user_id)
+    balance = store.balance(chat_id, user_id)
+
+    lines = [f"🏆 <b>{esc(name)}</b> — {len(held)}/{len(achievements.TIERS)} unlocked", ""]
+    if held:
+        lines.extend(f"{a.emoji} <b>{esc(a.name)}</b> — ${fmt(a.threshold)}" for a in held)
+    else:
+        lines.append("<i>Nothing unlocked yet.</i>")
+
+    upcoming = achievements.next_tier(balance)
+    if upcoming:
+        lines.append("")
+        lines.append(f"Next: {upcoming.emoji} <b>{esc(upcoming.name)}</b> — "
+                     f"${fmt(upcoming.threshold - balance)} to go")
+    await reply(update, "\n".join(lines))

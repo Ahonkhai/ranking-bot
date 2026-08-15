@@ -54,6 +54,7 @@ check the deploy log if `@handle` lookups aren't finding anyone.
 | `/rank @user` | Someone else's card by handle |
 | `/top3` | Podium image of the top three, with a VIEW ALL button |
 | `/history` | Your recent entries and who awarded them |
+| `/achievements` | Milestones unlocked, and the next one to chase |
 | `/give 500 @user` | Send some of your own points (set `ALLOW_TRANSFERS=0` to disable) |
 | `/stats` | Season summary |
 
@@ -215,6 +216,44 @@ All optional except the token.
 | `LOG_LEVEL` | `INFO` | |
 | `SENTRY_DSN` | — | Enables Sentry if `sentry-sdk` is installed. |
 | `ALLOW_MULTIPLE_INSTANCES` | `0` | Bypasses the single-instance lock. Don't. |
+
+---
+
+## Achievements
+
+Cash milestones, announced in the chat the moment someone crosses one:
+
+| | Achievement | Reach |
+|---|---|---|
+| 💵 | First Bag | $1,000 |
+| 💰 | Four Figures | $5,000 |
+| 🤑 | High Roller | $10,000 |
+| 💎 | Big Money | $25,000 |
+| 🏦 | Money Maker | $50,000 |
+| 👑 | Six Figures | $100,000 |
+| 🐋 | Whale | $250,000 |
+| 💠 | Mega Whale | $500,000 |
+| 🏛️ | Millionaire | $1,000,000 |
+
+Edit the `TIERS` list in [`rankbot/achievements.py`](rankbot/achievements.py) to
+retune them. The `code` on each tier is what gets stored, so emoji, wording and
+thresholds can all change freely — but never rename a code that has already
+been awarded, or those unlocks are orphaned.
+
+An unlock is the one thing in this bot that is **recorded rather than derived**.
+Everything else is a query over the ledger, but "have we already told the group
+about this?" isn't in the ledger, and re-announcing every time a balance wobbles
+across a threshold would be worse than storing one row. The table's primary key
+is `(chat_id, user_id, code)`, which is what makes a double-announce impossible
+even if two awards race.
+
+Consequences worth knowing:
+
+- One award can unlock several tiers at once — `/setcash 300000` on a new member
+  announces all seven they passed, rather than only the highest.
+- Badges are permanent. A deduction, an `/undo`, or a new season lowers the
+  balance but never takes an achievement back, and re-earning it stays quiet.
+- They're per chat, like everything else on the board.
 
 ---
 

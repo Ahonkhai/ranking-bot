@@ -22,6 +22,7 @@ PUBLIC_COMMANDS = [
     BotCommand("top3", "Quick top three"),
     BotCommand("history", "Recent entries and who made them"),
     BotCommand("stats", "Season summary"),
+    BotCommand("achievements", "Milestones you have unlocked"),
     BotCommand("help", "What this bot does"),
 ]
 
@@ -110,6 +111,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("top3", public.cmd_top3))
     app.add_handler(CommandHandler("history", public.cmd_history))
     app.add_handler(CommandHandler("stats", public.cmd_stats))
+    app.add_handler(CommandHandler("achievements", public.cmd_achievements))
     if config.ALLOW_TRANSFERS:
         app.add_handler(CommandHandler("give", public.cmd_give))
 

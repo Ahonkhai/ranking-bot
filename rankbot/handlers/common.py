@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 
-from .. import caches, config, store
+from .. import achievements, caches, config, store
 from ..identity import esc
 
 log = logging.getLogger("rankbot.handlers")
@@ -137,6 +137,27 @@ async def on_error(update, context) -> None:
             await update.effective_message.reply_text(text)
     except Exception:
         log.debug("could not deliver the error notice", exc_info=True)
+
+
+async def announce_achievements(update, chat_id: int, user_id: int, name: str):
+    """Celebrate any milestone this member has just reached.
+
+    Sent as its own message rather than appended to the confirmation, so the
+    unlock reads as an event in the chat instead of a footnote.
+    """
+    try:
+        unlocked = achievements.check(chat_id, user_id)
+    except Exception:
+        log.exception("achievement check failed for %s in %s", user_id, chat_id)
+        return
+    if not unlocked:
+        return
+
+    plural = "s" if len(unlocked) > 1 else ""
+    lines = [f"🏆 <b>Achievement{plural} unlocked!</b>", "", f"<b>{esc(name)}</b>"]
+    for a in unlocked:
+        lines.append(f"{a.emoji} <b>{esc(a.name)}</b> — reached ${a.threshold:,}")
+    await reply(update, "\n".join(lines))
 
 
 def usage(example: str, reply_hint: str = "") -> str:

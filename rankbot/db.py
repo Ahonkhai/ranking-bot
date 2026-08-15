@@ -14,7 +14,7 @@ from . import config
 
 log = logging.getLogger("rankbot.db")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.RLock()
@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ix_ledger_board ON ledger(chat_id, season_id, user_id);
 CREATE INDEX IF NOT EXISTS ix_ledger_time  ON ledger(chat_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_ledger_txn   ON ledger(chat_id, txn);
+
+-- Cash milestones. The primary key is what makes an unlock announce exactly
+-- once, however often a balance crosses the threshold afterwards.
+CREATE TABLE IF NOT EXISTS achievements (
+  chat_id     INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL,
+  code        TEXT    NOT NULL,
+  unlocked_at TEXT    NOT NULL,
+  balance_at  INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, user_id, code)
+);
 """
 
 

@@ -332,6 +332,35 @@ def history(chat_id: int, user_id: int, limit: int = 10) -> list[dict]:
     ]
 
 
+def recorded_achievements(chat_id: int, user_id: int) -> set[str]:
+    rows = db.get().execute(
+        "SELECT code FROM achievements WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id),
+    ).fetchall()
+    return {r["code"] for r in rows}
+
+
+def record_achievements(chat_id: int, user_id: int, codes, balance: int) -> None:
+    """INSERT OR IGNORE against the primary key, so a race between two
+    concurrent awards can't announce the same milestone twice."""
+    ts = now_iso()
+    with db.write() as c:
+        c.executemany(
+            "INSERT OR IGNORE INTO achievements"
+            "(chat_id,user_id,code,unlocked_at,balance_at) VALUES (?,?,?,?,?)",
+            [(chat_id, user_id, code, ts, balance) for code in codes],
+        )
+
+
+def achievement_log(chat_id: int, user_id: int) -> list[dict]:
+    rows = db.get().execute(
+        "SELECT code, unlocked_at, balance_at FROM achievements"
+        " WHERE chat_id=? AND user_id=? ORDER BY balance_at, unlocked_at",
+        (chat_id, user_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def window_delta(chat_id: int, user_id: int, days: int = 7) -> int:
     """Net change over the last `days`, for the rank card's 7-day chip."""
     row = db.get().execute(

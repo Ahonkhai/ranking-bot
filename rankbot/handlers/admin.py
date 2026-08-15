@@ -7,7 +7,8 @@ from telegram.ext import ContextTypes
 
 from .. import caches, migrate, store
 from ..identity import esc, find_amount, fmt, rank_emoji, resolve_target
-from .common import ensure_group, reply, require_admin, touch_actor, usage
+from .common import (announce_achievements, ensure_group, reply, require_admin,
+                     touch_actor, usage)
 
 log = logging.getLogger("rankbot.admin")
 
@@ -37,11 +38,12 @@ async def _prepare(update, args, example: str, reply_hint: str, need_amount: boo
 
 
 async def _confirm(update, chat_id: int, target, headline: str) -> None:
-    """Report the result with the member's new position."""
+    """Report the result with the member's new position, then any milestone."""
     caches.invalidate_chat(chat_id)
     rank, total = store.rank_of(chat_id, target.user_id)
     tail = f"  —  {rank_emoji(rank)} rank {rank} of {total}" if rank else ""
     await reply(update, headline + tail)
+    await announce_achievements(update, chat_id, target.user_id, target.name)
 
 
 async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
