@@ -225,10 +225,16 @@ empty board.** This is the single most common way to lose a leaderboard, and
 nothing about it raises an error — SQLite happily writes to the container
 filesystem right up until the container is replaced.
 
-On **Railway**: service → Settings → Volumes → attach one. The mount path does
-not matter; the bot reads `RAILWAY_VOLUME_MOUNT_PATH` and puts `rankbot.db`
-there automatically, overriding whatever `DB_PATH` says. Without a volume it
-logs a loud warning at every boot.
+On **Railway**, volumes are created from the project canvas, not from the
+service's Settings tab (there is no Volumes section there): right-click the
+service card → *Attach Volume*, or Ctrl/Cmd+K → `volume`, or the `+ Create`
+button → *Volume*. Then pick the service and give it a mount path.
+
+The mount path does not matter — the bot reads `RAILWAY_VOLUME_MOUNT_PATH` and
+puts `rankbot.db` there automatically, overriding whatever `DB_PATH` says.
+Confirm it worked by checking the service's Variables tab for
+`RAILWAY_VOLUME_MOUNT_PATH`. Without a volume the bot logs a loud warning at
+every boot.
 
 On **plain Docker**: `-v ranking_data:/data`, matching `DB_PATH`.
 
