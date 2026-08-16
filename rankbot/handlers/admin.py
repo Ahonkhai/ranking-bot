@@ -5,10 +5,10 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from .. import caches, migrate, store
+from .. import caches, config, migrate, store
 from ..identity import esc, find_amount, fmt, rank_emoji, resolve_target
-from .common import (announce_achievements, ensure_group, reply, require_admin,
-                     touch_actor, usage)
+from .common import (announce_achievements, board_of, ensure_group, reply,
+                     require_admin, require_backend, touch_actor, usage)
 
 log = logging.getLogger("rankbot.admin")
 
@@ -20,6 +20,10 @@ async def _prepare(update, args, example: str, reply_hint: str, need_amount: boo
     the reason it can't proceed.
     """
     if not await ensure_group(update):
+        return None
+    # Location first, then the existing authorization. Being an admin of the
+    # public group must never confer the ability to edit scores.
+    if not await require_backend(update):
         return None
     if not await require_admin(update):
         return None
@@ -34,16 +38,17 @@ async def _prepare(update, args, example: str, reply_hint: str, need_amount: boo
     if not target.ok or (need_amount and amount is None):
         await reply(update, usage(example, reply_hint))
         return None
-    return update.effective_chat.id, target, amount
+    return board_of(update), target, amount
 
 
-async def _confirm(update, chat_id: int, target, headline: str) -> None:
+async def _confirm(update, context, chat_id: int, target, headline: str) -> None:
     """Report the result with the member's new position, then any milestone."""
     caches.invalidate_chat(chat_id)
     rank, total = store.rank_of(chat_id, target.user_id)
     tail = f"  —  {rank_emoji(rank)} rank {rank} of {total}" if rank else ""
     await reply(update, headline + tail)
-    await announce_achievements(update, chat_id, target.user_id, target.name)
+    await announce_achievements(update, chat_id, target.user_id, target.name,
+                                context=context)
 
 
 async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,7 +61,7 @@ async def cmd_addcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     new_balance = store.award(chat_id, target.user_id, amount,
                               update.effective_user.id, "added")
-    await _confirm(update, chat_id, target,
+    await _confirm(update, context, chat_id, target,
                    f"✅ Added <b>${fmt(amount)}</b> to <b>{esc(target.name)}</b>\n"
                    f"New total: <b>${fmt(new_balance)}</b>")
 
@@ -75,7 +80,7 @@ async def cmd_removecash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply(update, f"<b>{esc(target.name)}</b> is already at $0.")
         return
     note = "" if removed == amount else f" (capped — they only had ${fmt(removed)})"
-    await _confirm(update, chat_id, target,
+    await _confirm(update, context, chat_id, target,
                    f"✅ Removed <b>${fmt(removed)}</b> from <b>{esc(target.name)}</b>{note}\n"
                    f"New total: <b>${fmt(new_balance)}</b>")
 
@@ -91,7 +96,7 @@ async def cmd_setcash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delta, new_balance = store.set_balance(chat_id, target.user_id, amount,
                                            update.effective_user.id)
     change = f"{'+' if delta >= 0 else '−'}${fmt(abs(delta))}"
-    await _confirm(update, chat_id, target,
+    await _confirm(update, context, chat_id, target,
                    f"✅ <b>{esc(target.name)}</b> set to <b>${fmt(new_balance)}</b> ({change})")
 
 
@@ -111,10 +116,12 @@ async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flagged and an audit row records who reversed it."""
     if not await ensure_group(update):
         return
+    if not await require_backend(update):
+        return
     if not await require_admin(update):
         return
     touch_actor(update)
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     result = store.undo_last(chat_id, update.effective_user.id)
     if result is None:
@@ -136,10 +143,12 @@ async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_newseason(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_group(update):
         return
+    if not await require_backend(update):
+        return
     if not await require_admin(update):
         return
     touch_actor(update)
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     final = store.standings(chat_id)[:10]
     old, new = store.close_season(chat_id, " ".join(context.args) if context.args else None)
@@ -160,6 +169,8 @@ async def cmd_newseason(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Offers the reversible option first; the destructive one is still there."""
     if not await ensure_group(update):
+        return
+    if not await require_backend(update):
         return
     if not await require_admin(update):
         return
@@ -189,6 +200,9 @@ async def cb_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
+    if not config.is_backend(update.effective_chat.id):
+        await query.answer("Scores are managed in the admin group.", show_alert=True)
+        return
     if update.effective_user.id != owner:
         await query.answer("That prompt belongs to another admin.", show_alert=True)
         return
@@ -197,7 +211,7 @@ async def cb_resetboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     if action == "season":
         old, new = store.close_season(chat_id)
@@ -218,10 +232,12 @@ async def cmd_adoptlegacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """One-shot import of the old data.json into this chat."""
     if not await ensure_group(update):
         return
+    if not await require_backend(update):
+        return
     if not await require_admin(update):
         return
     touch_actor(update)
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     preview = migrate.read_legacy()
     if not preview:

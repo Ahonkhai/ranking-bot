@@ -11,7 +11,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .. import caches, store
+from .. import caches, config, store
 
 log = logging.getLogger("rankbot.passive")
 
@@ -27,8 +27,9 @@ async def observe_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type not in GROUP_TYPES:
         return
     try:
-        store.ensure_chat(chat.id, chat.title)
-        store.upsert_member(chat.id, user.id, user.username, user.full_name)
+        board = config.board_for(chat.id)
+        store.ensure_chat(board, chat.title)
+        store.upsert_member(board, user.id, user.username, user.full_name)
     except Exception:
         # An indexing failure must never take out message handling.
         log.exception("passive index failed for %s in %s", user.id, chat.id)
@@ -44,8 +45,9 @@ async def observe_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE
         if member.is_bot:
             continue
         try:
-            store.ensure_chat(chat.id, chat.title)
-            store.upsert_member(chat.id, member.id, member.username, member.full_name)
+            board = config.board_for(chat.id)
+            store.ensure_chat(board, chat.title)
+            store.upsert_member(board, member.id, member.username, member.full_name)
         except Exception:
             log.exception("failed to index joiner %s", member.id)
 
@@ -66,7 +68,8 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = upd.new_chat_member.user
     if user and not user.is_bot and update.effective_chat.type in GROUP_TYPES:
         try:
-            store.upsert_member(update.effective_chat.id, user.id, user.username, user.full_name)
+            store.upsert_member(config.board_for(update.effective_chat.id), user.id,
+                                user.username, user.full_name)
         except Exception:
             log.exception("failed to index chat_member update")
 
@@ -78,6 +81,6 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if upd is None or chat is None or chat.type not in GROUP_TYPES:
         return
     if upd.new_chat_member.status in ("member", "administrator"):
-        store.ensure_chat(chat.id, chat.title)
+        store.ensure_chat(config.board_for(chat.id), chat.title)
         caches.invalidate_admins(chat.id)
         log.info("added to chat %s (%s)", chat.id, chat.title)

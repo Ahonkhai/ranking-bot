@@ -71,6 +71,62 @@ DB_PATH, DATA_FILE = resolve_storage(
     VOLUME_MOUNT,
 )
 
+# ── two-group mode ───────────────────────────────────────────────────────
+# One private community split across an admin group and a public one. Both
+# read and write a single set of scores; the group only decides what you are
+# allowed to do, never what the data says.
+#
+# Leave these unset and the bot behaves exactly as before: one independent
+# board per chat.
+
+def _group_id(name: str) -> int | None:
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+BACKEND_GROUP_ID = _group_id("BACKEND_GROUP_ID")
+FRONTEND_GROUP_ID = _group_id("FRONTEND_GROUP_ID")
+TWO_GROUP_MODE = BACKEND_GROUP_ID is not None and FRONTEND_GROUP_ID is not None
+
+# Announce unlocks in the public group rather than wherever the admin typed.
+ANNOUNCE_IN_FRONTEND = _bool("ANNOUNCE_IN_FRONTEND", True)
+
+
+def board_for(chat_id: int) -> int:
+    """The board a chat reads and writes.
+
+    Both configured groups resolve to the backend id, which is what makes the
+    two of them one shared leaderboard rather than two that look alike. Any
+    other chat keeps its own board, so nothing changes for a single-group
+    deployment.
+    """
+    if TWO_GROUP_MODE and chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID):
+        return BACKEND_GROUP_ID
+    return chat_id
+
+
+def chats_for_board(board_id: int) -> tuple[int, ...]:
+    """Every chat that displays this board — both groups share cached images,
+    so invalidating one has to invalidate the other."""
+    if TWO_GROUP_MODE and board_id == BACKEND_GROUP_ID:
+        return (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+    return (board_id,)
+
+
+def is_backend(chat_id: int) -> bool:
+    """Score-changing commands are only accepted here."""
+    return not TWO_GROUP_MODE or chat_id == BACKEND_GROUP_ID
+
+
+def is_known_chat(chat_id: int) -> bool:
+    return not TWO_GROUP_MODE or chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+
+
 CURRENCY = os.getenv("CURRENCY", "💰")
 # Symbol printed before amounts on the rendered cards and boards.
 CURRENCY_SYMBOL = os.getenv("CURRENCY_SYMBOL", "$")

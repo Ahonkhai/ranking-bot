@@ -201,6 +201,9 @@ All optional except the token.
 | `BOT_TOKEN` | — | **Required.** |
 | `DB_PATH` | `data.db` | SQLite file. Put it on a mounted volume in production. |
 | `DATA_FILE` | `data.json` | Legacy file, only read by the import. |
+| `BACKEND_GROUP_ID` | — | Admin group. Set with the next one to share one board. |
+| `FRONTEND_GROUP_ID` | — | Public group. Read-only for scores. |
+| `ANNOUNCE_IN_FRONTEND` | `1` | Send unlock announcements to the public group. |
 | `PAGE_SIZE` | `15` | Rows per leaderboard page. |
 | `CURRENCY_SYMBOL` | `$` | Printed before amounts on the rendered cards. |
 | `XP_LINEAR` | `500` | Linear term of the level curve. |
@@ -313,6 +316,45 @@ Not every member will show a photo, and there are two different reasons:
 If someone's photo is persistently missing while others load, it's the first
 reason. `rankbot.avatars` logs failures at INFO with the exception type, so
 the deploy log distinguishes them.
+
+---
+
+## Two-group mode
+
+One private community split across an admin group and a public one, over a
+single set of scores.
+
+```
+BACKEND_GROUP_ID=-100123456789     # admins manage scores here
+FRONTEND_GROUP_ID=-100987654321    # members view them here
+```
+
+Set both and:
+
+- **Both groups resolve to one board.** `config.board_for()` maps either chat
+  id to the backend's, so there is exactly one ledger, one ranking, one set of
+  achievements. An edit in the admin group is visible in the public group on
+  the next command — no sync, because there is nothing to sync.
+- **Score-changing commands are refused outside the admin group.** The location
+  check runs *before* the existing admin authorization, never instead of it, so
+  being an admin of the public group confers nothing.
+- **Unconfigured groups are turned away** with "This bot isn't configured for
+  this group", so the board can't be read or written from anywhere else.
+- **Unlock announcements go to the public group**, since that's where they're
+  news. Set `ANNOUNCE_IN_FRONTEND=0` to keep them where the command was typed.
+- **Cached board images are invalidated for both chats** on any write. Without
+  that, an admin edit would leave the public group showing the old picture.
+
+Leave both unset and nothing changes: every chat keeps its own independent
+board, exactly as before.
+
+### Switching it on later
+
+If the bot has already been running in both chats they will have separate
+scores. The first boot after configuring them merges the frontend's rows into
+the shared board — ledger entries interleave by timestamp, achievements already
+held win, and the earlier `joined_at` is kept so appearing in the second group
+never looks like a newer arrival. It is idempotent, so later boots do nothing.
 
 ---
 

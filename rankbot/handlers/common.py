@@ -47,11 +47,36 @@ def is_group(update: Update) -> bool:
     return chat is not None and chat.type in GROUP_TYPES
 
 
+def board_of(update: Update) -> int:
+    """The board this chat reads and writes.
+
+    In two-group mode both configured groups resolve to the same id, which is
+    what makes them one shared leaderboard instead of two that look alike.
+    """
+    return config.board_for(update.effective_chat.id)
+
+
 async def ensure_group(update: Update) -> bool:
-    """Boards are per-chat, so the mutating commands only make sense in one."""
-    if is_group(update):
+    """Commands only make sense inside a group, and — when the bot is
+    configured for a specific pair of them — only inside those."""
+    if not is_group(update):
+        await reply(update, "That command only works inside a group.")
+        return False
+    if not config.is_known_chat(update.effective_chat.id):
+        await reply(update, "This bot isn't configured for this group.")
+        return False
+    return True
+
+
+async def require_backend(update: Update) -> bool:
+    """Score-changing commands are accepted in the admin group only.
+
+    Checked *before* the existing admin authorization, not instead of it: being
+    an admin of the public group must never confer the ability to edit scores.
+    """
+    if config.is_backend(update.effective_chat.id):
         return True
-    await reply(update, "That command only works inside a group.")
+    await reply(update, "Scores are managed in the admin group, not here.")
     return False
 
 
@@ -105,8 +130,9 @@ def touch_actor(update: Update) -> None:
     if chat is None or user is None or user.is_bot or chat.type not in GROUP_TYPES:
         return
     try:
-        store.ensure_chat(chat.id, chat.title)
-        store.upsert_member(chat.id, user.id, user.username, user.full_name)
+        board = config.board_for(chat.id)
+        store.ensure_chat(board, chat.title)
+        store.upsert_member(board, user.id, user.username, user.full_name)
     except Exception:
         log.exception("failed to index actor %s in %s", user.id, chat.id)
 
@@ -139,7 +165,27 @@ async def on_error(update, context) -> None:
         log.debug("could not deliver the error notice", exc_info=True)
 
 
-async def announce_achievements(update, chat_id: int, user_id: int, name: str):
+async def _say(update, context, text: str):
+    """Put an announcement where the community will see it.
+
+    Admin edits happen in the backend group, but the unlock is news for the
+    public one — so it goes there when a frontend group is configured, and
+    stays put otherwise.
+    """
+    target = config.FRONTEND_GROUP_ID
+    if (config.TWO_GROUP_MODE and config.ANNOUNCE_IN_FRONTEND
+            and target is not None and context is not None
+            and update.effective_chat.id != target):
+        try:
+            await context.bot.send_message(chat_id=target, text=text, parse_mode="HTML")
+            return
+        except Exception:
+            log.exception("could not announce in the frontend group %s", target)
+    await reply(update, text)
+
+
+async def announce_achievements(update, chat_id: int, user_id: int, name: str,
+                                context=None):
     """Celebrate any milestone this member has just reached.
 
     Sent as its own message rather than appended to the confirmation, so the
@@ -155,7 +201,7 @@ async def announce_achievements(update, chat_id: int, user_id: int, name: str):
         # Only the highest tier is announced. A big award earns everything
         # beneath it too and all of that is recorded, but listing seven lines
         # buries the one that means something — /achievements has the full set.
-        await reply(update, "\n".join([
+        await _say(update, context, "\n".join([
             "🏆 <b>ACHIEVEMENT UNLOCKED</b>",
             "",
             f"<b>{esc(top.name)}</b>  ·  {top.rarity.label}",

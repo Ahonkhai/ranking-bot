@@ -11,8 +11,9 @@ from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
                         find_amount)
 from ..render import make_achievements_card, make_rank_card, make_top3_image
 from . import boards
-from .common import (announce_achievements, cooled_down, ensure_group,
-                     fingerprint, reply, render, touch_actor, usage)
+from .common import (announce_achievements, board_of, cooled_down,
+                     ensure_group, fingerprint, reply, render, touch_actor,
+                     usage)
 
 log = logging.getLogger("rankbot.public")
 
@@ -106,7 +107,7 @@ async def _send_card(update, context, user_id: int, name: str, header: str,
     you're asking about somebody else.
     """
     chat = update.effective_chat
-    chat_id = chat.id
+    chat_id = board_of(update)
 
     admin_set = await caches.admin_ids(chat)
     card = cards.build(chat_id, user_id, name, header=header,
@@ -185,7 +186,8 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     touch_actor(update)
     chat = update.effective_chat
-    board = store.standings(chat.id)[:3]
+    board_id = board_of(update)
+    board = store.standings(board_id)[:3]
     if not board:
         await reply(update, "No one is on the board yet.")
         return
@@ -199,7 +201,7 @@ async def cmd_top3(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "balance": r["balance"]} for r in board]
 
     # Same file_id reuse as the board: an unchanged podium costs one API call.
-    key = (chat.id, fingerprint("top3", rows, store.current_season(chat.id),
+    key = (chat.id, fingerprint("top3", rows, store.current_season(board_id),
                                 store.now_iso()[:10]))
     photo = caches.BOARD_FILE_IDS.get(key)
     cached = photo is not None
@@ -228,7 +230,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_group(update):
         return
     touch_actor(update)
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     target = resolve_target(update)
     if target.error:
@@ -262,7 +264,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_group(update):
         return
     touch_actor(update)
-    s = store.chat_stats(update.effective_chat.id)
+    s = store.chat_stats(board_of(update))
     await reply(update, "\n".join([
         f"📊 <b>Season {s['season']}</b>", "",
         f"Members ranked: <b>{s['members']}</b>",
@@ -281,7 +283,7 @@ async def cmd_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     touch_actor(update)
 
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
     sender = update.effective_user
     target = resolve_target(update)
     amount = find_amount(context.args or [])
@@ -309,7 +311,8 @@ async def cmd_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"You: ${fmt(mine)}  ·  Them: ${fmt(theirs)}"
     ))
     # A transfer can push the recipient over a milestone.
-    await announce_achievements(update, chat_id, target.user_id, target.name)
+    await announce_achievements(update, chat_id, target.user_id, target.name,
+                                context=context)
 
 
 def _achievements_keyboard(user_id: int, page: int, pages: int):
@@ -347,7 +350,7 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_group(update):
         return
     touch_actor(update)
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
 
     target = resolve_target(update)
     if target.error:
@@ -387,7 +390,7 @@ async def cb_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
-    chat_id = update.effective_chat.id
+    chat_id = board_of(update)
     name = store.member_name(chat_id, user_id)
     try:
         photo, view = await _achievements_photo(context, chat_id, user_id, name, page)

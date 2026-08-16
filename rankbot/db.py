@@ -83,6 +83,67 @@ CREATE TABLE IF NOT EXISTS achievements (
 """
 
 
+def merge_groups(conn: sqlite3.Connection) -> int:
+    """Fold the frontend group's rows into the shared board.
+
+    Two-group mode can be switched on after the bot has already been running
+    in one or both chats, and the two would otherwise keep separate scores
+    forever. Idempotent: once merged there is nothing left under the frontend
+    id, so later boots are a no-op.
+    """
+    if not config.TWO_GROUP_MODE:
+        return 0
+    src, dst = config.FRONTEND_GROUP_ID, config.BACKEND_GROUP_ID
+    if src == dst:
+        return 0
+
+    moved = conn.execute(
+        "SELECT COUNT(*) AS n FROM ledger WHERE chat_id=?", (src,)).fetchone()["n"]
+    members = conn.execute(
+        "SELECT COUNT(*) AS n FROM members WHERE chat_id=?", (src,)).fetchone()["n"]
+    if not moved and not members:
+        return 0
+
+    log.info("merging group %s into the shared board %s (%d entries, %d members)",
+             src, dst, moved, members)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Members first: keep whichever record we already had, then pull the
+        # earlier joined_at forward so appearing in the second group never
+        # looks like a newer arrival.
+        conn.execute(
+            "INSERT OR IGNORE INTO members(chat_id,user_id,username,full_name,"
+            "last_seen,joined_at)"
+            " SELECT ?,user_id,username,full_name,last_seen,joined_at"
+            " FROM members WHERE chat_id=?", (dst, src))
+        conn.execute(
+            "UPDATE members SET joined_at = MIN(COALESCE(joined_at, last_seen),"
+            "   COALESCE((SELECT s.joined_at FROM members s"
+            "             WHERE s.chat_id=? AND s.user_id=members.user_id),"
+            "            joined_at, last_seen))"
+            " WHERE chat_id=?", (src, dst))
+        conn.execute("DELETE FROM members WHERE chat_id=?", (src,))
+
+        # An unlock already held on the shared board wins; the rest come over.
+        conn.execute(
+            "INSERT OR IGNORE INTO achievements(chat_id,user_id,code,unlocked_at,balance_at)"
+            " SELECT ?,user_id,code,unlocked_at,balance_at FROM achievements WHERE chat_id=?",
+            (dst, src))
+        conn.execute("DELETE FROM achievements WHERE chat_id=?", (src,))
+
+        # The ledger has a surrogate key, so entries just move across and the
+        # two histories interleave by timestamp.
+        conn.execute("UPDATE ledger SET chat_id=?, season_id=1 WHERE chat_id=?", (dst, src))
+
+        conn.execute("DELETE FROM seasons WHERE chat_id=?", (src,))
+        conn.execute("DELETE FROM chats WHERE chat_id=?", (src,))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return moved
+
+
 def storage_warning() -> str | None:
     """Flag storage that won't survive a redeploy, before anyone loses a board."""
     if config.VOLUME_MOUNT:
@@ -118,6 +179,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         conn.executescript(SCHEMA)
         _upgrade(conn, was)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        merge_groups(conn)
         _conn = conn
 
         where = (f"persistent volume {config.VOLUME_MOUNT}" if config.VOLUME_MOUNT

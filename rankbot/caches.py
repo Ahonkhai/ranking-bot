@@ -87,9 +87,15 @@ AVATAR_MISS = TTLCache(maxsize=config.AVATAR_RAW_MAX,
 BOARD_FILE_IDS = TTLCache(maxsize=config.BOARD_CACHE_MAX, ttl=6 * 3600)
 
 
-def invalidate_chat(chat_id: int) -> None:
-    """Call after any ledger write: the board picture may have changed."""
-    BOARD_FILE_IDS.drop_prefix((chat_id,))
+def invalidate_chat(board_id: int) -> None:
+    """Call after any ledger write: the board picture may have changed.
+
+    Clears every chat that displays this board, not just the one the command
+    arrived in — otherwise an admin edit in the backend group leaves the
+    public group showing yesterday's image.
+    """
+    for chat_id in config.chats_for_board(board_id):
+        BOARD_FILE_IDS.drop_prefix((chat_id,))
 
 
 def invalidate_admins(chat_id: int) -> None:

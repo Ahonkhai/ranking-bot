@@ -49,8 +49,11 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
 
     Returns (fingerprint_key, page_rows, render_kwargs, caption, pages).
     """
-    store.ensure_chat(chat.id, chat.title)
-    board = store.standings(chat.id, scope)
+    # Data comes from the shared board; the cache key stays per chat because
+    # the admin crowns drawn on it differ between the two groups.
+    board_id = config.board_for(chat.id)
+    store.ensure_chat(board_id, chat.title)
+    board = store.standings(board_id, scope)
     total = len(board)
     pages = _pages(total)
     page = max(1, min(page, pages))
@@ -69,7 +72,7 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
     movement = {}
     if scope in MOVEMENT_SCOPES and rows:
         previous = store.ranks_as_of(
-            chat.id, scope, store.ago_iso(hours=config.RANK_CHANGE_WINDOW_HOURS))
+            board_id, scope, store.ago_iso(hours=config.RANK_CHANGE_WINDOW_HOURS))
         if previous:
             for r in rows:
                 was = previous.get(r["user_id"])
@@ -96,7 +99,7 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
     key = (
         chat.id,
         fingerprint(scope, page, total, rows, sorted(admin_set & {r["user_id"] for r in rows}),
-                    movement, you, store.current_season(chat.id),
+                    movement, you, store.current_season(board_id),
                     store.now_iso()[:10]),
     )
 
@@ -106,7 +109,7 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
         "pages": pages,
         "total": total,
         "scope_label": store.SCOPE_LABELS.get(scope, scope.upper()),
-        "season": store.current_season(chat.id) if scope == "season" else None,
+        "season": store.current_season(board_id) if scope == "season" else None,
         "movement": movement,
         "you": you,
     }
