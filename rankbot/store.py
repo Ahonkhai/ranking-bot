@@ -332,6 +332,52 @@ def history(chat_id: int, user_id: int, limit: int = 10) -> list[dict]:
     ]
 
 
+def activity_streak(chat_id: int, user_id: int) -> int:
+    """Consecutive days, ending today or yesterday, on which this member was
+    awarded something.
+
+    Derived from the ledger's own timestamps rather than a counter column, so
+    it can't drift out of step with the scores. Yesterday still counts as live
+    so a streak doesn't die at midnight before anyone has had a chance to act.
+    """
+    rows = db.get().execute(
+        "SELECT DISTINCT date(created_at) AS day FROM ledger"
+        " WHERE chat_id=? AND user_id=? AND delta>0 AND voided_by IS NULL"
+        " ORDER BY day DESC",
+        (chat_id, user_id),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    days = [datetime.strptime(r["day"], "%Y-%m-%d").date() for r in rows]
+    today = datetime.now(timezone.utc).date()
+    if (today - days[0]).days > 1:
+        return 0                      # the streak has already lapsed
+
+    streak, cursor = 1, days[0]
+    for day in days[1:]:
+        if (cursor - day).days != 1:
+            break
+        streak += 1
+        cursor = day
+    return streak
+
+
+def rank_movement(chat_id: int, user_id: int, hours: int) -> tuple[int | None, int | None]:
+    """(rank_then, rank_now). Either side is None when they weren't ranked."""
+    then = ranks_as_of(chat_id, "season", ago_iso(hours=hours)).get(user_id)
+    now, _total = rank_of(chat_id, user_id)
+    return then, now
+
+
+def leader_as_of(chat_id: int, hours: int) -> int | None:
+    """Whoever held #1 that long ago, for spotting a takeover."""
+    for uid, rank in ranks_as_of(chat_id, "season", ago_iso(hours=hours)).items():
+        if rank == 1:
+            return uid
+    return None
+
+
 def held_rank_since(chat_id: int, user_id: int, days: int, rank: int = 1) -> bool:
     """True when the member was at `rank` or better at every daily checkpoint
     across the window, and still is.

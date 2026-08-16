@@ -128,6 +128,7 @@ def register(app: Application) -> None:
     # Callbacks
     app.add_handler(CallbackQueryHandler(public.cb_leaderboard, pattern=r"^lb:"))
     app.add_handler(CallbackQueryHandler(admin.cb_resetboard, pattern=r"^rb:"))
+    app.add_handler(CallbackQueryHandler(public.cb_achievements, pattern=r"^ach:"))
 
     # Membership
     app.add_handler(ChatMemberHandler(passive.on_chat_member, ChatMemberHandler.CHAT_MEMBER))

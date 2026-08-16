@@ -156,10 +156,10 @@ async def announce_achievements(update, chat_id: int, user_id: int, name: str):
         # beneath it too and all of that is recorded, but listing seven lines
         # buries the one that means something — /achievements has the full set.
         await reply(update, "\n".join([
-            "🏆 <b>Achievement unlocked!</b>",
+            "🏆 <b>ACHIEVEMENT UNLOCKED</b>",
             "",
-            f"<b>{esc(name)}</b>",
-            f"{top.emoji} <b>{esc(top.name)}</b> — {esc(top.requirement)}",
+            f"<b>{esc(top.name)}</b>  ·  {top.rarity.label}",
+            f"{esc(name)} — {esc(top.description)}",
         ]))
 
     # A rank can improve without that member's balance moving — someone above

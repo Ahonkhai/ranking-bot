@@ -348,6 +348,52 @@ def radial_glow(size: tuple, color: tuple, opacity: int = 90, falloff: float = 2
     return layer
 
 
+@lru_cache(maxsize=128)
+def glyph_img(kind: str, size: int, colour: tuple):
+    """Simple drawn badge glyphs for the achievement tiles.
+
+    Drawn rather than emoji on purpose: the render fonts carry no colour emoji,
+    so an emoji icon would come out as a blank box on every tile. One glyph per
+    achievement category, tinted by rarity, reads better than thirty-one
+    bespoke drawings anyway.
+    """
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    s = size
+    fill = (*colour, 255)
+
+    if kind == "coin":
+        d.ellipse([s * .10, s * .10, s * .90, s * .90], outline=fill, width=max(2, s // 12))
+        d.ellipse([s * .28, s * .28, s * .72, s * .72], fill=fill)
+    elif kind == "crown":
+        pts = [(s * .10, s * .74), (s * .10, s * .30), (s * .32, s * .50),
+               (s * .50, s * .20), (s * .68, s * .50), (s * .90, s * .30),
+               (s * .90, s * .74)]
+        d.polygon(pts, fill=fill)
+        d.rectangle([s * .10, s * .74, s * .90, s * .86], fill=fill)
+    elif kind == "flame":
+        d.polygon([(s * .50, s * .10), (s * .80, s * .48), (s * .74, s * .78),
+                   (s * .50, s * .92), (s * .26, s * .78), (s * .20, s * .48)], fill=fill)
+        d.polygon([(s * .50, s * .40), (s * .64, s * .62), (s * .50, s * .80),
+                   (s * .36, s * .62)], fill=(0, 0, 0, 130))
+    elif kind == "star":
+        pts = []
+        for i in range(10):
+            r = (s * .44) if i % 2 == 0 else (s * .18)
+            a = -math.pi / 2 + i * math.pi / 5
+            pts.append((s / 2 + math.cos(a) * r, s / 2 + math.sin(a) * r))
+        d.polygon(pts, fill=fill)
+    elif kind == "bolt":
+        d.polygon([(s * .56, s * .08), (s * .24, s * .54), (s * .46, s * .54),
+                   (s * .40, s * .92), (s * .76, s * .44), (s * .54, s * .44)], fill=fill)
+    else:  # lock
+        d.rounded_rectangle([s * .18, s * .44, s * .82, s * .90],
+                            radius=max(2, int(s * .10)), fill=fill)
+        d.arc([s * .30, s * .12, s * .70, s * .62], 180, 360,
+              fill=fill, width=max(2, s // 9))
+    return img
+
+
 @lru_cache(maxsize=8)
 def vignette(size: tuple, strength: int = 120, reach: float = 1.28):
     """Darkened corners, so the eye lands in the middle of the frame."""

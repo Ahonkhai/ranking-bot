@@ -230,7 +230,10 @@ def test_held_rank_since_is_false_on_a_young_board(fresh_db):
 def test_only_the_highest_tier_is_announced(fresh_db):
     store.set_balance(CHAT, ALICE, 400_000, ADMIN)
     unlocked = achievements.check(CHAT, ALICE)
-    assert len(unlocked) == 7
+    # Seven cash tiers, plus the levels that much lifetime XP is worth.
+    assert cash_codes(unlocked) == [
+        "first_bag", "four_figures", "high_roller", "big_money",
+        "money_maker", "six_figures", "whale"]
     assert achievements.headline(unlocked).code == "whale"
 
 
@@ -262,12 +265,15 @@ def test_recording_is_idempotent(fresh_db):
     assert len(store.achievement_log(CHAT, ALICE)) == 1
 
 
-def test_held_by_is_ordered_easiest_first(fresh_db):
+def test_held_by_follows_the_registry_order(fresh_db):
+    """Stable placement matters more than sorting: a badge stays in the same
+    spot on the card between views."""
     crowd(12)
     store.set_balance(CHAT, ALICE, 400_000, ADMIN)
     achievements.check(CHAT, ALICE)
-    rarities = [a.rarity for a in achievements.held_by(CHAT, ALICE)]
-    assert rarities == sorted(rarities)
+    held = codes(achievements.held_by(CHAT, ALICE))
+    registry = [a.code for a in achievements.TIERS]
+    assert held == [c for c in registry if c in set(held)]
 
 
 def test_the_sweep_still_awards_even_though_it_stays_quiet(fresh_db):
@@ -283,3 +289,94 @@ def test_the_sweep_still_awards_even_though_it_stays_quiet(fresh_db):
     store.set_balance(CHAT, BOB, 0, ADMIN)      # ALICE inherits #1
     achievements.check_board(CHAT, skip=BOB)
     assert "number_one" in codes(achievements.held_by(CHAT, ALICE))
+
+
+# ── streaks, levels, feats ───────────────────────────────────────────────
+
+def _award_on(user_id, days_ago, amount=100):
+    """Backdate one award so streaks can be built without waiting days."""
+    store.award(CHAT, user_id, amount, ADMIN, "streak")
+    row = store.db.get().execute(
+        "SELECT MAX(id) AS id FROM ledger WHERE chat_id=? AND user_id=?",
+        (CHAT, user_id)).fetchone()
+    with store.db.write() as c:
+        c.execute("UPDATE ledger SET created_at=? WHERE id=?",
+                  (store.ago_iso(days=days_ago), row["id"]))
+
+
+def test_a_streak_counts_consecutive_days(fresh_db):
+    for day in (2, 1, 0):
+        _award_on(ALICE, day)
+    assert store.activity_streak(CHAT, ALICE) == 3
+    assert codes(achievements.earned_at_streak(3)) == ["getting_started"]
+
+
+def test_a_gap_breaks_the_streak(fresh_db):
+    for day in (5, 4, 1, 0):
+        _award_on(ALICE, day)
+    assert store.activity_streak(CHAT, ALICE) == 2
+
+
+def test_a_lapsed_streak_is_zero(fresh_db):
+    for day in (9, 8, 7):
+        _award_on(ALICE, day)
+    assert store.activity_streak(CHAT, ALICE) == 0
+
+
+def test_yesterday_still_counts_as_live(fresh_db):
+    """A streak shouldn't die at midnight before anyone can act."""
+    for day in (2, 1):
+        _award_on(ALICE, day)
+    assert store.activity_streak(CHAT, ALICE) == 2
+
+
+def test_no_activity_is_no_streak(fresh_db):
+    assert store.activity_streak(CHAT, ALICE) == 0
+
+
+def test_streak_tiers_unlock_in_order(fresh_db):
+    for day in range(6, -1, -1):
+        _award_on(ALICE, day)
+    earned = [a.code for a in achievements.check(CHAT, ALICE)
+              if a.kind == achievements.STREAK]
+    assert earned == ["getting_started", "on_fire"]
+
+
+def test_level_tiers_follow_lifetime_xp(fresh_db):
+    store.award(CHAT, ALICE, 30_000, ADMIN)
+    earned = [a.code for a in achievements.check(CHAT, ALICE)
+              if a.kind == achievements.LEVEL]
+    assert "level_up" in earned and "experienced" in earned
+
+
+def test_king_slayer_needs_an_actual_predecessor(fresh_db):
+    crowd(4)
+    store.award(CHAT, BOB, 900_000, ADMIN)
+    with store.db.write() as c:                       # BOB held #1 yesterday
+        c.execute("UPDATE ledger SET created_at=?", (store.ago_iso(days=2),))
+    store.award(CHAT, ALICE, 950_000, ADMIN)          # ALICE takes it today
+    assert "king_slayer" in codes(achievements.check(CHAT, ALICE))
+
+
+def test_the_first_leader_is_not_a_king_slayer(fresh_db):
+    """Nobody was dethroned, so there's nothing to slay."""
+    crowd(4)
+    store.award(CHAT, ALICE, 900_000, ADMIN)
+    assert "king_slayer" not in codes(achievements.check(CHAT, ALICE))
+
+
+def test_climbing_feats_need_a_real_climb(fresh_db):
+    crowd(12)
+    store.award(CHAT, ALICE, 1, ADMIN)                # bottom of the board
+    with store.db.write() as c:
+        c.execute("UPDATE ledger SET created_at=?", (store.ago_iso(days=2),))
+    store.award(CHAT, ALICE, 900_000, ADMIN)          # straight to the top
+    earned = codes(achievements.check(CHAT, ALICE))
+    assert "climber" in earned and "rocket" in earned
+
+
+def test_every_achievement_has_a_rarity_and_a_glyph():
+    for a in achievements.TIERS:
+        assert isinstance(a.rarity, achievements.Rarity)
+        assert a.icon in {"coin", "crown", "flame", "star", "bolt"}
+        assert a.name and a.description

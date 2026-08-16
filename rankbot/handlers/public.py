@@ -2,13 +2,14 @@
 
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
+                      InputMediaPhoto, Update)
 from telegram.ext import ContextTypes
 
-from .. import achievements, avatars, caches, cards, config, roasts, store
+from .. import avatars, caches, cards, config, roasts, store
 from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
                         find_amount)
-from ..render import make_rank_card, make_top3_image
+from ..render import make_achievements_card, make_rank_card, make_top3_image
 from . import boards
 from .common import (announce_achievements, cooled_down, ensure_group,
                      fingerprint, reply, render, touch_actor, usage)
@@ -22,6 +23,7 @@ HELP = """👋 <b>Ranking Bot</b>
 /myrank — your rank card
 /rank — your card, or reply / @tag for someone else's
 /top3 — quick text shoutout
+/achievements — your badges (or reply / @tag for someone else's)
 /history — your last entries, and who awarded them
 /stats — season summary
 {transfers}
@@ -310,8 +312,38 @@ async def cmd_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await announce_achievements(update, chat_id, target.user_id, target.name)
 
 
+def _achievements_keyboard(user_id: int, page: int, pages: int):
+    if pages <= 1:
+        return None
+    row = []
+    if page > 1:
+        row.append(InlineKeyboardButton("‹ PREVIOUS",
+                                        callback_data=f"ach:{user_id}:{page - 1}"))
+    if page < pages:
+        row.append(InlineKeyboardButton("NEXT ›",
+                                        callback_data=f"ach:{user_id}:{page + 1}"))
+    return InlineKeyboardMarkup([row]) if row else None
+
+
+async def _achievements_photo(context, chat_id: int, user_id: int, name: str, page: int):
+    """(photo, view). One path, so the command and the pagination buttons
+    cannot drift apart."""
+    view = cards.achievements_view(chat_id, user_id, name, page)
+    view["avatar"] = await avatars.fetch_avatar_bytes(context.bot, user_id)
+    return await render(make_achievements_card, view), view
+
+
+def _achievements_caption(name: str, view: dict) -> str:
+    return (f"🏆 <b>{esc(name)}</b> — "
+            f"{view['unlocked_count']}/{view['total']} unlocked")
+
+
 async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Milestones a member has unlocked, and what they're climbing towards."""
+    """Your badges, or someone else's by reply or @handle.
+
+    Same target resolution as /rank: the replied-to author first, then a named
+    handle, then the sender.
+    """
     if not await ensure_group(update):
         return
     touch_actor(update)
@@ -324,32 +356,47 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target.ok:
         user_id, name = target.user_id, target.name
     else:
-        user = update.effective_user
-        user_id, name = user.id, display_name(user)
+        sender = update.effective_user
+        user_id, name = sender.id, display_name(sender)
 
-    held = achievements.held_by(chat_id, user_id)
-    balance = store.balance(chat_id, user_id)
-    rank, _total = store.rank_of(chat_id, user_id)
+    wait = cooled_down(update, "achievements")
+    if wait:
+        await reply(update, f"Easy — try again in {wait:.0f}s.")
+        return
 
-    lines = [f"🏆 <b>{esc(name)}</b> — {len(held)}/{len(achievements.TIERS)} unlocked", ""]
-    if held:
-        lines.extend(f"{a.emoji} <b>{esc(a.name)}</b> — {esc(a.requirement)}"
-                     for a in held)
-    else:
-        lines.append("<i>Nothing unlocked yet.</i>")
+    try:
+        photo, view = await _achievements_photo(context, chat_id, user_id, name, 1)
+    except Exception:
+        log.exception("achievement card failed for %s in %s", user_id, chat_id)
+        await reply(update, "❌ I couldn't draw that card just now. Try again in a moment.")
+        return
 
-    # What they're climbing towards, on both ladders.
-    goals = []
-    cash_next = achievements.next_tier(balance)
-    if cash_next:
-        goals.append(f"{cash_next.emoji} <b>{esc(cash_next.name)}</b> — "
-                     f"${fmt(cash_next.value - balance)} to go")
-    rank_next = achievements.next_rank_tier(rank)
-    if rank_next:
-        goals.append(f"{rank_next.emoji} <b>{esc(rank_next.name)}</b> — "
-                     f"{esc(rank_next.requirement)}")
-    if goals:
-        lines.append("")
-        lines.append("<b>Next up</b>")
-        lines.extend(goals)
-    await reply(update, "\n".join(lines))
+    await update.effective_message.reply_photo(
+        photo=photo, caption=_achievements_caption(name, view), parse_mode="HTML",
+        reply_markup=_achievements_keyboard(user_id, view["page"], view["pages"]))
+
+
+async def cb_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Page through someone's badges without re-asking who they are."""
+    query = update.callback_query
+    try:
+        _, raw_uid, raw_page = (query.data or "").split(":")
+        user_id, page = int(raw_uid), int(raw_page)
+    except ValueError:
+        await query.answer()
+        return
+
+    await query.answer()
+    chat_id = update.effective_chat.id
+    name = store.member_name(chat_id, user_id)
+    try:
+        photo, view = await _achievements_photo(context, chat_id, user_id, name, page)
+    except Exception:
+        log.exception("achievement page failed for %s in %s", user_id, chat_id)
+        return
+
+    await query.edit_message_media(
+        media=InputMediaPhoto(media=photo, caption=_achievements_caption(name, view),
+                              parse_mode="HTML"),
+        reply_markup=_achievements_keyboard(user_id, view["page"], view["pages"]))
+

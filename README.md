@@ -54,7 +54,7 @@ check the deploy log if `@handle` lookups aren't finding anyone.
 | `/rank @user` | Someone else's card by handle |
 | `/top3` | Podium image of the top three, with a VIEW ALL button |
 | `/history` | Your recent entries and who awarded them |
-| `/achievements` | Milestones unlocked, and the next one to chase |
+| `/achievements` | Badge card; reply or `@tag` for someone else's |
 | `/give 500 @user` | Send some of your own points (set `ALLOW_TRANSFERS=0` to disable) |
 | `/stats` | Season summary |
 

@@ -54,6 +54,49 @@ def _parse(ts: str | None) -> datetime | None:
         return None
 
 
+def achievements_view(chat_id: int, user_id: int, name: str, page: int = 1) -> dict:
+    """Everything one page of the achievement card needs.
+
+    Unlocked badges come first so page one shows what you have, then the
+    locked ones in registry order so there's a visible ladder to climb. Works
+    for an unranked member too — they simply see every tile locked.
+    """
+    from . import achievements as ach       # local: achievements imports store
+
+    held = {a.code for a in ach.held_by(chat_id, user_id)}
+    dates = {row["code"]: _parse(row["unlocked_at"])
+             for row in store.achievement_log(chat_id, user_id)}
+
+    unlocked = [a for a in ach.TIERS if a.code in held]
+    locked = [a for a in ach.TIERS if a.code not in held]
+    ordered = [{"achievement": a, "unlocked_at": dates.get(a.code)} for a in unlocked]
+    ordered += [{"achievement": a, "unlocked_at": None} for a in locked]
+
+    from .render.achievements import PER_PAGE
+    pages = max(1, math.ceil(len(ordered) / PER_PAGE))
+    page = max(1, min(page, pages))
+    start = (page - 1) * PER_PAGE
+
+    rank, _total = store.rank_of(chat_id, user_id)
+    level = levels.level_for_xp(store.lifetime_xp(chat_id, user_id))
+
+    return {
+        "user_id": user_id,
+        "name": name,
+        "rank": rank,
+        "cash": store.balance(chat_id, user_id),
+        "level": level,
+        "level_title": levels.title_for_level(level),
+        "unlocked_count": len(unlocked),
+        "total": ach.TOTAL,
+        "rarest": ach.rarest(unlocked),
+        "entries": ordered[start:start + PER_PAGE],
+        "page": page,
+        "pages": pages,
+        "avatar": None,
+    }
+
+
 def build(chat_id: int, user_id: int, name: str, *, header: str = "MY RANK",
           is_admin: bool = False) -> RankCard | None:
     """Gather a member's card. None when they have no ranked entries yet."""

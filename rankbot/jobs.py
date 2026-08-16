@@ -121,12 +121,12 @@ async def achievements_job(context) -> None:
         if not champions:
             continue
 
-        lines = ["🏆 <b>Achievement unlocked!</b>", ""]
+        king = achievements.KING
+        lines = ["🏆 <b>ACHIEVEMENT UNLOCKED</b>", "",
+                 f"<b>{html.escape(king.name)}</b>  ·  {king.rarity.label}"]
         for user_id, _earned in champions:
             who = store.member_name(chat_id, user_id)
-            lines.append(f"<b>{html.escape(who)}</b> — {achievements.CHAMPION.emoji} "
-                         f"{html.escape(achievements.CHAMPION.name)} · "
-                         f"{html.escape(achievements.CHAMPION.requirement)}")
+            lines.append(f"{html.escape(who)} — {html.escape(king.description)}")
         try:
             await context.bot.send_message(chat_id=chat_id, text="\n".join(lines),
                                            parse_mode="HTML")
