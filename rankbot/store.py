@@ -293,27 +293,6 @@ def lifetime_xp(chat_id: int, user_id: int) -> int:
     return int(row["xp"])
 
 
-def lifetime_xp_many(chat_id: int, user_ids: list[int]) -> dict[int, int]:
-    """Lifetime XP for several members in one query.
-
-    Feeds the level-title badge on each leaderboard row: one board page asks
-    for up to a page-full of members' levels, and a query apiece would turn a
-    single render into fifteen round-trips. Members with no positive ledger
-    entries simply don't come back and default to zero at the call site.
-    """
-    if not user_ids:
-        return {}
-    placeholders = ",".join("?" * len(user_ids))
-    rows = db.get().execute(
-        f"SELECT user_id, COALESCE(SUM(delta),0) AS xp FROM ledger"
-        f" WHERE chat_id=? AND delta>0 AND voided_by IS NULL"
-        f" AND user_id IN ({placeholders})"
-        f" GROUP BY user_id",
-        (chat_id, *user_ids),
-    ).fetchall()
-    return {r["user_id"]: int(r["xp"]) for r in rows}
-
-
 def joined_at(chat_id: int, user_id: int) -> str | None:
     """Earliest date we can evidence for this member: their first ledger
     entry, else when they were first indexed."""

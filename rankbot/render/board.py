@@ -32,13 +32,13 @@ FRAME = 10 * S                   # outer gold frame inset
 
 # Band heights, in supersampled pixels.
 HEADER_H = 196 * S
-PODIUM_H = 452 * S
+PODIUM_H = 420 * S
 GAP      = 16 * S
 FOOTER_H = 66 * S
 
 # List metrics.
 COL_H  = 34 * S                  # column-header strip
-ROW_H  = 80 * S
+ROW_H  = 66 * S
 IPAD   = 10 * S                  # list-panel inner padding
 YOU_H  = 74 * S
 
@@ -56,18 +56,6 @@ def _fmt(n: int) -> str:
 
 def _cash(n: int) -> str:
     return f"{config.CURRENCY_SYMBOL}{_fmt(n)}"
-
-
-def _badge_label(title: str | None) -> str | None:
-    """The row/podium status badge text.
-
-    A display transform of the real level title, not new data: the ranks share
-    the word "Member", which reads as noise in a two-word pill, so it's dropped
-    to leave the punchy half — "Elite Member" → "ELITE".
-    """
-    if not title:
-        return None
-    return title.upper().replace(" MEMBER", "").strip()
 
 
 def _centre_text(draw, cx, y, text, font, fill) -> None:
@@ -104,21 +92,6 @@ def _pedestal(base, cx, base_y, w, h, metal) -> None:
     d.ellipse([x0, top_y - eh / 2, x0 + w, top_y + eh / 2],
               fill=(24, 21, 15, 255), outline=(*metal[1], 210), width=max(1, S))
     d.arc([x0, base_y - eh, x0 + w, base_y], 20, 160, fill=(*metal[2], 150), width=max(1, S))
-
-
-def _status_pill(base, x, cy, label, *, align="left", metal=GOLDDIM_M):
-    """Small level-title badge. Returns its width so callers can lay out around it."""
-    f = get_font(11 * S, bold=True)
-    tw = tracked_width(f, label, S)
-    px, h = 11 * S, 23 * S
-    w = tw + 2 * px
-    x0 = x if align == "left" else int(x - w / 2)
-    y0 = int(cy - h / 2)
-    composite_at(base, gradient_panel((w, h), h // 2, (46, 40, 27), (26, 22, 15)), x0, y0)
-    ImageDraw.Draw(base).rounded_rectangle([x0, y0, x0 + w - 1, y0 + h - 1],
-                                           radius=h // 2, outline=(*metal[1], 150), width=1)
-    draw_tracked(base, (x0 + px, y0 + 6 * S), label, f, (228, 212, 176, 255), S)
-    return w
 
 
 def _movement(base, draw, cx, cy, delta, font) -> None:
@@ -221,15 +194,9 @@ def _podium_person(img, draw, cx, base_y, ped_h, ped_w, row, admin_ids):
         composite_at(img, ac, int(cx - nw / 2 - ac.width - 6 * S), int(name_y + 3 * S))
     _centre_text(draw, cx, name_y, name, nfont, (247, 226, 150) if row["user_id"] in admin_ids else INK)
 
-    label = _badge_label(row.get("title"))
-    score_y = name_y + 30 * S
-    if label:
-        _status_pill(img, cx, name_y + 30 * S + 4 * S, label, align="center", metal=metal)
-        score_y = name_y + 58 * S
-
     sfont = get_font(30 * S if is_top else 25 * S, bold=True)
     score = gradient_text_img(_cash(row["balance"]), sfont, metal)
-    composite_at(img, score, cx - score.width // 2, score_y)
+    composite_at(img, score, cx - score.width // 2, name_y + 32 * S)
 
 
 def _podium(img, draw, y0, podium, admin_ids) -> None:
@@ -298,16 +265,15 @@ def _list(img, draw, y0, rows, admin_ids, movement) -> int:
                      54 * S, GOLDDIM_M, ring_w=3 * S)
 
         is_adm = row["user_id"] in admin_ids
-        label = _badge_label(row.get("title"))
         nx = name_x
         if is_adm:
             ac = crown_img(18 * S, GOLD_M)
-            composite_at(img, ac, nx, cy - 22 * S)
+            composite_at(img, ac, nx, int(cy - ac.height / 2))
             nx += ac.width + 8 * S
         name = fit_text(row["name"], nfont, name_max - (nx - name_x))
-        draw.text((nx, cy - 22 * S), name, font=nfont, fill=(247, 226, 150) if is_adm else INK)
-        if label:
-            _status_pill(img, name_x, cy + 14 * S, label)
+        _, nth, nb = text_size(nfont, name or "M")
+        draw.text((nx, cy - nth / 2 - nb[1]), name, font=nfont,
+                  fill=(247, 226, 150) if is_adm else INK)
 
         # movement, then cash on the far right
         _movement(img, draw, mv_cx, cy, movement.get(row["user_id"]), mvf)
