@@ -10,7 +10,7 @@ import math
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 
-from .. import avatars, caches, config, store
+from .. import avatars, caches, config, levels, store
 from ..identity import esc, fmt
 from ..render import make_leaderboard_image
 from .common import fingerprint, render
@@ -67,6 +67,14 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
         for r in board[start:start + config.PAGE_SIZE]
     ]
 
+    # The member title shown as each row's status badge is the same level title
+    # the rank card uses, so a member reads the same standing in both places.
+    # Levels come from lifetime XP, which a season balance can leave unchanged,
+    # so the title travels in `rows` and lands in the fingerprint below.
+    xp = store.lifetime_xp_many(board_id, [r["user_id"] for r in rows])
+    for r in rows:
+        r["title"] = levels.title_for_level(levels.level_for_xp(xp.get(r["user_id"], 0)))
+
     admin_set = await caches.admin_ids(chat)
 
     movement = {}
@@ -92,8 +100,10 @@ async def build_page(bot, chat, scope: str, page: int, viewer_id: int | None):
                     gap = ahead["balance"] - r["balance"]
                     if gap > 0:
                         note = f"{fmt(gap)} BEHIND {ahead['name'][:16]}"
+                you_xp = store.lifetime_xp(board_id, viewer_id)
                 you = {"rank": r["rank"], "name": r["name"],
-                       "balance": r["balance"], "note": note}
+                       "balance": r["balance"], "note": note,
+                       "title": levels.title_for_level(levels.level_for_xp(you_xp))}
                 break
 
     key = (
