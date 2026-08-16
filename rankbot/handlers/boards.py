@@ -147,10 +147,9 @@ async def send_board(update, context, scope: str = "season", page: int = 1):
         context.bot, chat, scope, page, viewer)
 
     if not rows:
-        await update.effective_message.reply_text(
-            "The leaderboard is empty. Admins can add someone with "
-            "<code>/addcash 500</code> as a reply to their message.",
-            parse_mode="HTML")
+        # No instructions attached: in the public group nobody can run the
+        # command they'd point at anyway.
+        await update.effective_message.reply_text("The leaderboard is empty.")
         return
 
     photo, _from_cache, worth_caching = await photo_for(
@@ -170,7 +169,7 @@ async def edit_board(update, context, scope: str, page: int):
         context.bot, chat, scope, page, viewer)
 
     if not rows:
-        await query.answer("Nothing on this board yet.", show_alert=True)
+        await query.answer("The leaderboard is empty.", show_alert=True)
         return
 
     photo, _from_cache, worth_caching = await photo_for(
