@@ -229,3 +229,41 @@ def test_the_merge_is_idempotent(tmp_path, monkeypatch):
                             (BACKEND,)).fetchone()[0] == 200
     finally:
         conn.close()
+
+
+# ── the index is shared too ──────────────────────────────────────────────
+
+def test_speaking_in_either_group_indexes_you_on_the_shared_board(fresh_db, two_groups):
+    """Members only ever chat in the public group, but admins target them from
+    the admin group — so the index has to be shared, not per chat."""
+    import asyncio
+    from datetime import datetime, timezone
+    from telegram import Chat, Message, Update, User
+    from rankbot.handlers import passive
+
+    public = Chat(id=FRONTEND, type=Chat.SUPERGROUP, title="Public")
+    dave = User(id=555, first_name="Dave", username="daveh", is_bot=False)
+    msg = Message(message_id=1, date=datetime.now(timezone.utc), chat=public,
+                  from_user=dave, text="hey everyone")
+    asyncio.run(passive.observe_message(Update(update_id=1, message=msg), None))
+
+    # Indexed against the shared board, not the chat it was said in.
+    assert store.get_member(config.board_for(BACKEND), 555) is not None
+    # And therefore findable by handle from the admin group.
+    found = store.find_by_username(config.board_for(BACKEND), "daveh")
+    assert [r["user_id"] for r in found] == [555]
+
+
+def test_a_stranger_group_cannot_pollute_the_shared_index(fresh_db, two_groups):
+    import asyncio
+    from datetime import datetime, timezone
+    from telegram import Chat, Message, Update, User
+    from rankbot.handlers import passive
+
+    other = Chat(id=STRANGER, type=Chat.SUPERGROUP, title="Someone else's")
+    intruder = User(id=666, first_name="Nope", username="nope", is_bot=False)
+    msg = Message(message_id=1, date=datetime.now(timezone.utc), chat=other,
+                  from_user=intruder, text="hello")
+    asyncio.run(passive.observe_message(Update(update_id=1, message=msg), None))
+
+    assert store.get_member(config.board_for(BACKEND), 666) is None
