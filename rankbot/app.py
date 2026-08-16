@@ -124,6 +124,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("newseason", admin.cmd_newseason))
     app.add_handler(CommandHandler("resetboard", admin.cmd_resetboard))
     app.add_handler(CommandHandler("adoptlegacy", admin.cmd_adoptlegacy))
+    app.add_handler(CommandHandler("chatid", admin.cmd_chatid))
 
     # Callbacks
     app.add_handler(CallbackQueryHandler(public.cb_leaderboard, pattern=r"^lb:"))

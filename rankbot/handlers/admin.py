@@ -255,3 +255,25 @@ async def cmd_adoptlegacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<code>data.json</code> into this chat as opening entries.\n"
         f"Check <code>/leaderboard</code>, then keep the old file somewhere safe."
     ))
+
+async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Report this chat's id, for filling in BACKEND_/FRONTEND_GROUP_ID.
+
+    Deliberately not gated on the backend group: you need it *before* the
+    groups are configured, which is exactly when that guard would refuse.
+    """
+    chat = update.effective_chat
+    board = config.board_for(chat.id)
+    lines = [f"<b>{esc(chat.title or 'this chat')}</b>",
+             f"<code>{chat.id}</code>"]
+    if config.TWO_GROUP_MODE:
+        role = ("admin group" if chat.id == config.BACKEND_GROUP_ID else
+                "public group" if chat.id == config.FRONTEND_GROUP_ID else
+                "not configured for this bot")
+        lines.append("")
+        lines.append(f"Role: {role}")
+        lines.append(f"Shared board: <code>{board}</code>")
+    else:
+        lines.append("")
+        lines.append("Two-group mode is off — this chat has its own board.")
+    await reply(update, chr(10).join(lines))
