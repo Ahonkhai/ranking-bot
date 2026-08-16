@@ -6,7 +6,6 @@ previous one, and undo / history / seasons are queries rather than features.
 """
 
 import logging
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from . import db
@@ -530,34 +529,8 @@ def deduct(chat_id: int, user_id: int, amount: int, actor_id: int) -> tuple[int,
         return removed, cur_bal - removed
 
 
-class TransferError(Exception):
-    pass
-
-
-def transfer(chat_id: int, from_id: int, to_id: int, amount: int) -> tuple[int, int]:
-    """Move points between members as one two-row transaction.
-    Returns (sender_balance, recipient_balance)."""
-    if from_id == to_id:
-        raise TransferError("You can't send to yourself.")
-    if amount <= 0:
-        raise TransferError("Amount must be a positive number.")
-    season = current_season(chat_id)
-    txn = uuid.uuid4().hex
-    with db.write() as c:
-        row = c.execute(
-            "SELECT COALESCE(SUM(delta),0) AS bal FROM ledger"
-            " WHERE chat_id=? AND season_id=? AND user_id=? AND voided_by IS NULL",
-            (chat_id, season, from_id),
-        ).fetchone()
-        if int(row["bal"]) < amount:
-            raise TransferError(f"You only have {int(row['bal']):,} to send.")
-        _insert(c, chat_id, season, from_id, -amount, from_id, f"sent to {to_id}", txn)
-        _insert(c, chat_id, season, to_id, amount, from_id, f"received from {from_id}", txn)
-    return balance(chat_id, from_id), balance(chat_id, to_id)
-
-
 def undo_last(chat_id: int, actor_id: int) -> dict | None:
-    """Void the most recent entry (or transfer pair) in this chat.
+    """Void the most recent entry (or grouped pair) in this chat.
 
     Nothing is deleted: the original rows get a voided_by stamp and a zero-delta
     audit row records who reversed what.

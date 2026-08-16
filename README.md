@@ -55,7 +55,6 @@ check the deploy log if `@handle` lookups aren't finding anyone.
 | `/top3` | Podium image of the top three, with a VIEW ALL button |
 | `/history` | Your recent entries and who awarded them |
 | `/achievements` | Badge card; reply or `@tag` for someone else's |
-| `/give 500 @user` | Send some of your own points (set `ALLOW_TRANSFERS=0` to disable) |
 | `/stats` | Season summary |
 
 ### Admins
@@ -210,7 +209,6 @@ All optional except the token.
 | `XP_QUADRATIC` | `50` | Quadratic term of the level curve. |
 | `XP_BAR_CUMULATIVE` | `0` | `1` shows lifetime XP against the next level's total. |
 | `RANK_CHANGE_WINDOW_HOURS` | `24` | How far back ↑/↓ movement looks. |
-| `ALLOW_TRANSFERS` | `1` | Enables `/give`. |
 | `COOLDOWN_SECONDS` | `4` | Per-user cooldown on the image commands. |
 | `RENDER_CONCURRENCY` | `3` | Simultaneous PIL renders. |
 | `ADMIN_TTL` | `300` | Admin-list cache lifetime. Invalidated instantly on promote/demote anyway. |

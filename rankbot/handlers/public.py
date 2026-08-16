@@ -6,14 +6,12 @@ from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
                       InputMediaPhoto, Update)
 from telegram.ext import ContextTypes
 
-from .. import avatars, caches, cards, config, roasts, store
-from ..identity import (esc, fmt, display_name, rank_emoji, resolve_target,
-                        find_amount)
+from .. import avatars, caches, cards, roasts, store
+from ..identity import esc, fmt, display_name, rank_emoji, resolve_target
 from ..render import make_achievements_card, make_rank_card, make_top3_image
 from . import boards
-from .common import (announce_achievements, board_of, cooled_down,
-                     ensure_group, fingerprint, reply, render, touch_actor,
-                     usage)
+from .common import (board_of, cooled_down, ensure_group, fingerprint, reply,
+                     render, touch_actor)
 
 log = logging.getLogger("rankbot.public")
 
@@ -27,7 +25,7 @@ HELP = """👋 <b>Ranking Bot</b>
 /achievements — your badges (or reply / @tag for someone else's)
 /history — your last entries, and who awarded them
 /stats — season summary
-{transfers}
+
 <b>Admins</b>
 /addcash 500 @user — add to a member
 /removecash 500 @user — deduct (floors at 0)
@@ -44,9 +42,7 @@ name someone — handles change, replies don't.
 
 
 def help_text() -> str:
-    transfers = ("/give 500 @user — send some of your own points\n"
-                 if config.ALLOW_TRANSFERS else "")
-    return HELP.format(transfers=transfers)
+    return HELP
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -272,47 +268,6 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Awarded this season: <b>${fmt(s['awarded'])}</b>",
         f"Entries in the last 7 days: <b>{fmt(s['entries_week'])}</b>",
     ]))
-
-
-async def cmd_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Member-to-member transfer, recorded as one two-row transaction."""
-    if not config.ALLOW_TRANSFERS:
-        await reply(update, "Transfers are switched off in this bot's settings.")
-        return
-    if not await ensure_group(update):
-        return
-    touch_actor(update)
-
-    chat_id = board_of(update)
-    sender = update.effective_user
-    target = resolve_target(update)
-    amount = find_amount(context.args or [])
-
-    if target.error:
-        await reply(update, f"❌ {target.error}")
-        return
-    if not target.ok or amount is None:
-        await reply(update, usage("/give 500 @username", "/give 500"))
-        return
-    if amount <= 0:
-        await reply(update, "Amount must be a positive number.")
-        return
-
-    try:
-        mine, theirs = store.transfer(chat_id, sender.id, target.user_id, amount)
-    except store.TransferError as e:
-        await reply(update, f"❌ {esc(e)}")
-        return
-
-    caches.invalidate_chat(chat_id)
-    await reply(update, (
-        f"💸 <b>{esc(display_name(sender))}</b> sent <b>${fmt(amount)}</b> to "
-        f"<b>{esc(target.name)}</b>\n"
-        f"You: ${fmt(mine)}  ·  Them: ${fmt(theirs)}"
-    ))
-    # A transfer can push the recipient over a milestone.
-    await announce_achievements(update, chat_id, target.user_id, target.name,
-                                context=context)
 
 
 def _achievements_keyboard(user_id: int, page: int, pages: int):

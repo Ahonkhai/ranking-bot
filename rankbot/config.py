@@ -169,9 +169,6 @@ RENDER_CONCURRENCY = _int("RENDER_CONCURRENCY", 3)
 # Per-user, per-command cooldown for the expensive read commands.
 COOLDOWN_SECONDS = _float("COOLDOWN_SECONDS", 4.0)
 
-# Member-to-member /give transfers.
-ALLOW_TRANSFERS = _bool("ALLOW_TRANSFERS", True)
-
 # Weekly inactivity decay, percent of balance. 0 disables it entirely, which
 # is the default: silently taking points from people is opt-in behaviour.
 DECAY_PERCENT     = _float("DECAY_PERCENT", 0.0)

@@ -26,8 +26,6 @@ PUBLIC_COMMANDS = [
     BotCommand("help", "What this bot does"),
 ]
 
-TRANSFER_COMMAND = BotCommand("give", "Send some of your own points")
-
 ADMIN_COMMANDS = [
     BotCommand("addcash", "Add to a member"),
     BotCommand("removecash", "Deduct from a member"),
@@ -66,8 +64,6 @@ async def _post_init(app: Application) -> None:
     commands they can't run.
     """
     public_set = list(PUBLIC_COMMANDS)
-    if config.ALLOW_TRANSFERS:
-        public_set.insert(4, TRANSFER_COMMAND)
     try:
         await app.bot.set_my_commands(public_set, scope=BotCommandScopeAllPrivateChats())
         await app.bot.set_my_commands(public_set + ADMIN_COMMANDS,
@@ -112,8 +108,6 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("history", public.cmd_history))
     app.add_handler(CommandHandler("stats", public.cmd_stats))
     app.add_handler(CommandHandler("achievements", public.cmd_achievements))
-    if config.ALLOW_TRANSFERS:
-        app.add_handler(CommandHandler("give", public.cmd_give))
 
     # Admin
     app.add_handler(CommandHandler("addcash", admin.cmd_addcash))

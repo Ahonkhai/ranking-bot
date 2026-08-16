@@ -3,8 +3,6 @@ the sum of its entries, whatever sequence of operations produced it."""
 
 import random
 
-import pytest
-
 from rankbot import store
 from tests.conftest import CHAT
 
@@ -86,25 +84,6 @@ def test_undo_keeps_the_voided_row_visible_in_history(fresh_db):
     entries = store.history(CHAT, ALICE)
     assert len(entries) == 1
     assert entries[0]["voided"] is True
-
-
-def test_transfer_moves_points_and_undoes_as_a_pair(fresh_db):
-    store.award(CHAT, ALICE, 1000, ADMIN)
-    mine, theirs = store.transfer(CHAT, ALICE, BOB, 400)
-    assert (mine, theirs) == (600, 400)
-
-    store.undo_last(CHAT, ADMIN)
-    assert store.balance(CHAT, ALICE) == 1000
-    assert store.balance(CHAT, BOB) == 0
-
-
-def test_transfer_rejects_overdraft_and_self_send(fresh_db):
-    store.award(CHAT, ALICE, 100, ADMIN)
-    with pytest.raises(store.TransferError):
-        store.transfer(CHAT, ALICE, BOB, 500)
-    with pytest.raises(store.TransferError):
-        store.transfer(CHAT, ALICE, ALICE, 10)
-    assert store.balance(CHAT, ALICE) == 100
 
 
 def test_new_season_zeroes_the_board_but_keeps_history(fresh_db):
