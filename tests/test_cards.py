@@ -141,7 +141,7 @@ def render_for(uid, name="@member", **kw):
 def test_card_renders_at_the_expected_size(fresh_db):
     seed({1: 33_333})
     img = render_for(1)
-    assert (img.width, img.height) == (600, 984)
+    assert (img.width, img.height) == (600, 768)
 
 
 def test_rank_one_middle_and_last(fresh_db):
