@@ -203,7 +203,9 @@ All optional except the token.
 | `BACKEND_GROUP_ID` | — | Admin group. Set with the next one to share one board. |
 | `FRONTEND_GROUP_ID` | — | Public group. Read-only for scores. |
 | `ANNOUNCE_IN_FRONTEND` | `1` | Send unlock announcements to the public group. |
-| `EXTRA_GROUP_IDS` | — | Comma-separated chat ids that keep their own independent board even while two-group mode is on. |
+| `SECOND_BACKEND_GROUP_ID` | — | Second admin group. Set with the next one for a second, independent shared board. |
+| `SECOND_FRONTEND_GROUP_ID` | — | Second public group. Read-only for scores. |
+| `EXTRA_GROUP_IDS` | — | Comma-separated chat ids that keep their own independent board, admin-and-public in one, even while a pair is configured. |
 | `PAGE_SIZE` | `15` | Rows per leaderboard page. |
 | `CURRENCY_SYMBOL` | `$` | Printed before amounts on the rendered cards. |
 | `XP_LINEAR` | `500` | Linear term of the level curve. |
@@ -347,14 +349,35 @@ Set both and:
 Leave both unset and nothing changes: every chat keeps its own independent
 board, exactly as before.
 
-### Adding a second, unrelated group
+### A second, independent admin/public pair
 
-Turning on two-group mode locks out every other chat by default — "This bot
+To run a second community with its own admin group and public group — same
+split as above, but a completely separate board from the first pair — set:
+
+```
+SECOND_BACKEND_GROUP_ID=-100333333333    # admins manage the second board here
+SECOND_FRONTEND_GROUP_ID=-100444444444   # members view it here
+```
+
+Everything above (shared board within the pair, writes refused outside the
+admin group, unlock announcements, cache invalidation) applies to this pair
+exactly as it does to the first one — the two pairs just never touch each
+other's board. `/chatid` reports "second admin group" / "second public group"
+once it's configured.
+
+If either chat already has scores (for example it was previously listed in
+`EXTRA_GROUP_IDS` as a standalone board), the first boot after configuring
+both merges them into the shared board the same way described in "Switching
+it on later" below — nothing is lost, it just stops being independent.
+
+### Adding a group with no split at all
+
+Turning on any pair mode locks out every other chat by default — "This bot
 isn't configured for this group" — since an unrecognised group being read or
-written to is more often a mistake than an intentional third community.
+written to is more often a mistake than an intentional extra community.
 
-To add a group with its **own separate board**, not connected to the
-backend/frontend pair, list it in `EXTRA_GROUP_IDS`:
+To add a group with its **own separate board** but no admin/public split —
+admins just run commands directly inside it — list it in `EXTRA_GROUP_IDS`:
 
 ```
 EXTRA_GROUP_IDS=-100333333333               # one extra group
@@ -363,7 +386,7 @@ EXTRA_GROUP_IDS=-100333333333,-100444444444 # or several
 
 That chat behaves exactly like a single-group deployment: its own admins can
 run every command there, scores stay local to it, and nothing about it is
-merged with or visible from the backend/frontend board. Use `/chatid` in it
+merged with or visible from any configured pair's board. Use `/chatid` in it
 to confirm it's recognised.
 
 ### Switching it on later

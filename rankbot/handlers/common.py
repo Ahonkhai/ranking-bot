@@ -168,19 +168,18 @@ async def on_error(update, context) -> None:
 async def _say(update, context, text: str):
     """Put an announcement where the community will see it.
 
-    Admin edits happen in the backend group, but the unlock is news for the
-    public one — so it goes there when a frontend group is configured, and
-    stays put otherwise.
+    Admin edits happen in a backend group, but the unlock is news for that
+    pair's public one — so it goes there when a frontend group is configured
+    for *that* pair, and stays put otherwise. A standalone extra group has no
+    separate public group, and never borrows the other pair's.
     """
-    target = config.FRONTEND_GROUP_ID
-    if (config.TWO_GROUP_MODE and config.ANNOUNCE_IN_FRONTEND
-            and target is not None and context is not None
-            and update.effective_chat.id != target):
+    target = config.announce_target(update.effective_chat.id)
+    if target is not None and context is not None and update.effective_chat.id != target:
         try:
             await context.bot.send_message(chat_id=target, text=text, parse_mode="HTML")
             return
         except Exception:
-            log.exception("could not announce in the frontend group %s", target)
+            log.exception("could not announce in the public group %s", target)
     await reply(update, text)
 
 

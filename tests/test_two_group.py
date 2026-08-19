@@ -15,6 +15,8 @@ from rankbot.handlers import common
 BACKEND = -1001111111111
 FRONTEND = -1002222222222
 STRANGER = -1009999999999
+SECOND_BACKEND = -1005555555555
+SECOND_FRONTEND = -1006666666666
 ADMIN = 111
 DAVID = 222
 
@@ -24,6 +26,15 @@ def two_groups(monkeypatch):
     monkeypatch.setattr(config, "BACKEND_GROUP_ID", BACKEND)
     monkeypatch.setattr(config, "FRONTEND_GROUP_ID", FRONTEND)
     monkeypatch.setattr(config, "TWO_GROUP_MODE", True)
+    yield
+
+
+@pytest.fixture()
+def second_pair(monkeypatch, two_groups):
+    """A second, independent admin/public pair alongside the first."""
+    monkeypatch.setattr(config, "SECOND_BACKEND_GROUP_ID", SECOND_BACKEND)
+    monkeypatch.setattr(config, "SECOND_FRONTEND_GROUP_ID", SECOND_FRONTEND)
+    monkeypatch.setattr(config, "SECOND_GROUP_MODE", True)
     yield
 
 
@@ -252,6 +263,98 @@ def test_speaking_in_either_group_indexes_you_on_the_shared_board(fresh_db, two_
     # And therefore findable by handle from the admin group.
     found = store.find_by_username(config.board_for(BACKEND), "daveh")
     assert [r["user_id"] for r in found] == [555]
+
+
+# ── a second, independent admin/public pair ─────────────────────────────
+
+def test_second_pair_resolves_to_its_own_board(second_pair):
+    assert config.board_for(SECOND_BACKEND) == SECOND_BACKEND
+    assert config.board_for(SECOND_FRONTEND) == SECOND_BACKEND
+    # And never bleeds into the first pair's board.
+    assert config.board_for(SECOND_BACKEND) != config.board_for(BACKEND)
+
+
+def test_second_pair_is_recognised_and_stranger_is_not(second_pair):
+    assert config.is_known_chat(SECOND_BACKEND) is True
+    assert config.is_known_chat(SECOND_FRONTEND) is True
+    assert config.is_known_chat(STRANGER) is False
+
+
+def test_only_the_second_backend_may_change_second_board_scores(second_pair):
+    assert config.is_backend(SECOND_BACKEND) is True
+    assert config.is_backend(SECOND_FRONTEND) is False
+    # The first pair's backend has no authority over the second board.
+    assert config.is_backend(BACKEND) is True   # true for its own board only
+
+
+def test_second_pair_invalidation_stays_within_the_pair(second_pair):
+    assert set(config.chats_for_board(SECOND_BACKEND)) == {SECOND_BACKEND, SECOND_FRONTEND}
+    assert SECOND_BACKEND not in config.chats_for_board(BACKEND)
+    assert BACKEND not in config.chats_for_board(SECOND_BACKEND)
+
+
+def test_second_pair_scores_are_isolated_from_the_first(fresh_db, second_pair):
+    store.ensure_chat(config.board_for(BACKEND))
+    store.award(config.board_for(BACKEND), DAVID, 500, ADMIN)
+
+    store.ensure_chat(config.board_for(SECOND_BACKEND))
+    store.award(config.board_for(SECOND_BACKEND), DAVID, 40, ADMIN)
+
+    assert store.balance(config.board_for(FRONTEND), DAVID) == 500
+    assert store.balance(config.board_for(SECOND_FRONTEND), DAVID) == 40
+
+
+def test_second_frontend_cannot_write_and_second_backend_can(second_pair):
+    upd = FakeUpdate(SECOND_FRONTEND)
+    assert asyncio.run(common.require_backend(upd)) is False
+
+    upd = FakeUpdate(SECOND_BACKEND)
+    assert asyncio.run(common.require_backend(upd)) is True
+
+
+def test_announcements_stay_within_their_own_pair(second_pair):
+    """An unlock in the second pair must never be announced to the first
+    pair's public group, or vice versa."""
+    assert config.announce_target(BACKEND) == FRONTEND
+    assert config.announce_target(SECOND_BACKEND) == SECOND_FRONTEND
+    assert config.announce_target(SECOND_BACKEND) != FRONTEND
+
+
+def test_extra_group_announcement_is_never_redirected(monkeypatch, two_groups):
+    """A standalone extra group has no public group of its own to send to,
+    and must not borrow the first pair's."""
+    monkeypatch.setattr(config, "EXTRA_GROUP_IDS", (STRANGER,))
+    assert config.announce_target(STRANGER) is None
+
+
+def test_switching_the_second_pair_on_merges_its_own_split(tmp_path, monkeypatch):
+    """Mirrors the first pair's merge test: enabling the second pair after
+    the bot already ran in both of its chats must fold them into one board
+    without touching the first pair at all."""
+    path = tmp_path / "second_split.db"
+    db.close()
+    monkeypatch.setattr(config, "TWO_GROUP_MODE", False)
+    monkeypatch.setattr(config, "SECOND_GROUP_MODE", False)
+    monkeypatch.setattr(config, "DB_PATH", str(path))
+    conn = db.connect(str(path))
+    store.ensure_chat(SECOND_BACKEND)
+    store.ensure_chat(SECOND_FRONTEND)
+    store.upsert_member(SECOND_BACKEND, DAVID, "david", "David")
+    store.upsert_member(SECOND_FRONTEND, DAVID, "david", "David")
+    store.award(SECOND_BACKEND, DAVID, 10, ADMIN)
+    store.award(SECOND_FRONTEND, DAVID, 30, ADMIN)
+    db.close()
+
+    monkeypatch.setattr(config, "SECOND_BACKEND_GROUP_ID", SECOND_BACKEND)
+    monkeypatch.setattr(config, "SECOND_FRONTEND_GROUP_ID", SECOND_FRONTEND)
+    monkeypatch.setattr(config, "SECOND_GROUP_MODE", True)
+    conn = db.connect(str(path))
+    try:
+        assert store.balance(SECOND_BACKEND, DAVID) == 40
+        assert conn.execute("SELECT COUNT(*) AS n FROM ledger WHERE chat_id=?",
+                            (SECOND_FRONTEND,)).fetchone()["n"] == 0
+    finally:
+        db.close()
 
 
 # ── a third, unrelated group ────────────────────────────────────────────

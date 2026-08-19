@@ -84,16 +84,23 @@ CREATE TABLE IF NOT EXISTS achievements (
 
 
 def merge_groups(conn: sqlite3.Connection) -> int:
-    """Fold the frontend group's rows into the shared board.
+    """Fold each configured pair's frontend rows into its shared board.
 
-    Two-group mode can be switched on after the bot has already been running
-    in one or both chats, and the two would otherwise keep separate scores
+    A pair can be switched on after the bot has already been running in one
+    or both of its chats, and the two would otherwise keep separate scores
     forever. Idempotent: once merged there is nothing left under the frontend
-    id, so later boots are a no-op.
+    id, so later boots are a no-op. The two pairs are independent — merging
+    one never touches the other.
     """
-    if not config.TWO_GROUP_MODE:
-        return 0
-    src, dst = config.FRONTEND_GROUP_ID, config.BACKEND_GROUP_ID
+    moved = 0
+    if config.TWO_GROUP_MODE:
+        moved += _merge_pair(conn, config.FRONTEND_GROUP_ID, config.BACKEND_GROUP_ID)
+    if config.SECOND_GROUP_MODE:
+        moved += _merge_pair(conn, config.SECOND_FRONTEND_GROUP_ID, config.SECOND_BACKEND_GROUP_ID)
+    return moved
+
+
+def _merge_pair(conn: sqlite3.Connection, src: int, dst: int) -> int:
     if src == dst:
         return 0
 

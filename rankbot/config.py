@@ -93,14 +93,24 @@ BACKEND_GROUP_ID = _group_id("BACKEND_GROUP_ID")
 FRONTEND_GROUP_ID = _group_id("FRONTEND_GROUP_ID")
 TWO_GROUP_MODE = BACKEND_GROUP_ID is not None and FRONTEND_GROUP_ID is not None
 
+# A second, independent community: its own admin group, its own public group,
+# its own board — entirely unrelated to the pair above. Same rules, just a
+# second copy of them, for a second community rather than a second window
+# onto the first one.
+SECOND_BACKEND_GROUP_ID = _group_id("SECOND_BACKEND_GROUP_ID")
+SECOND_FRONTEND_GROUP_ID = _group_id("SECOND_FRONTEND_GROUP_ID")
+SECOND_GROUP_MODE = (SECOND_BACKEND_GROUP_ID is not None
+                      and SECOND_FRONTEND_GROUP_ID is not None)
+
 # Announce unlocks in the public group rather than wherever the admin typed.
 ANNOUNCE_IN_FRONTEND = _bool("ANNOUNCE_IN_FRONTEND", True)
 
-# Extra groups that keep their own independent board, unrelated to the
-# backend/frontend pair above. Without this, turning on two-group mode locks
-# every other chat out with "This bot isn't configured for this group" — this
-# is the escape hatch for a second community that just wants its own board
-# and shouldn't be merged into anyone else's scores.
+# Extra groups that keep their own independent board, unrelated to any of the
+# pairs above. Without this, configuring a pair locks every other chat out
+# with "This bot isn't configured for this group" — this is the escape hatch
+# for a community that just wants its own board, with admins managing it
+# from inside that same group, and shouldn't be merged into anyone else's
+# scores or split into an admin/public pair of its own.
 #
 # Comma-separated chat ids, e.g. EXTRA_GROUP_IDS=-100111,-100222
 def _group_ids(name: str) -> tuple[int, ...]:
@@ -123,22 +133,45 @@ EXTRA_GROUP_IDS = _group_ids("EXTRA_GROUP_IDS")
 def board_for(chat_id: int) -> int:
     """The board a chat reads and writes.
 
-    Both configured groups resolve to the backend id, which is what makes the
-    two of them one shared leaderboard rather than two that look alike. Any
-    other chat keeps its own board, so nothing changes for a single-group
+    Both groups in a configured pair resolve to that pair's backend id, which
+    is what makes the two of them one shared leaderboard rather than two that
+    look alike. A pair never crosses into the other pair's board. Any other
+    chat keeps its own board, so nothing changes for a single-group
     deployment.
     """
     if TWO_GROUP_MODE and chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID):
         return BACKEND_GROUP_ID
+    if SECOND_GROUP_MODE and chat_id in (SECOND_BACKEND_GROUP_ID, SECOND_FRONTEND_GROUP_ID):
+        return SECOND_BACKEND_GROUP_ID
     return chat_id
 
 
 def chats_for_board(board_id: int) -> tuple[int, ...]:
-    """Every chat that displays this board — both groups share cached images,
-    so invalidating one has to invalidate the other."""
+    """Every chat that displays this board — both groups in a pair share
+    cached images, so invalidating one has to invalidate the other."""
     if TWO_GROUP_MODE and board_id == BACKEND_GROUP_ID:
         return (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+    if SECOND_GROUP_MODE and board_id == SECOND_BACKEND_GROUP_ID:
+        return (SECOND_BACKEND_GROUP_ID, SECOND_FRONTEND_GROUP_ID)
     return (board_id,)
+
+
+def announce_target(chat_id: int) -> int | None:
+    """Which public group should hear about an unlock triggered from
+    `chat_id`, if any. None means: announce where the command was typed.
+
+    Only chats inside a configured pair redirect at all — a standalone
+    EXTRA_GROUP_IDS chat has no separate public group to send to, and must
+    never be redirected into the *other* pair's public group just because
+    one happens to be configured.
+    """
+    if not ANNOUNCE_IN_FRONTEND:
+        return None
+    if TWO_GROUP_MODE and chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID):
+        return FRONTEND_GROUP_ID
+    if SECOND_GROUP_MODE and chat_id in (SECOND_BACKEND_GROUP_ID, SECOND_FRONTEND_GROUP_ID):
+        return SECOND_FRONTEND_GROUP_ID
+    return None
 
 
 def is_backend(chat_id: int) -> bool:
@@ -146,14 +179,26 @@ def is_backend(chat_id: int) -> bool:
 
     An extra group is its own independent board, so it's exempt from the
     backend-only restriction the same way a single-group deployment is —
-    there's no shared board there for a stray write to corrupt.
+    there's no shared board there for a stray write to corrupt. Each pair's
+    frontend is only ever writable from *that* pair's backend, never the
+    other one's.
     """
-    return not TWO_GROUP_MODE or chat_id == BACKEND_GROUP_ID or chat_id in EXTRA_GROUP_IDS
+    if not (TWO_GROUP_MODE or SECOND_GROUP_MODE):
+        return True
+    if chat_id in EXTRA_GROUP_IDS:
+        return True
+    if TWO_GROUP_MODE and chat_id == BACKEND_GROUP_ID:
+        return True
+    if SECOND_GROUP_MODE and chat_id == SECOND_BACKEND_GROUP_ID:
+        return True
+    return False
 
 
 def is_known_chat(chat_id: int) -> bool:
-    return (not TWO_GROUP_MODE
-            or chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+    if not (TWO_GROUP_MODE or SECOND_GROUP_MODE):
+        return True
+    return (chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+            or chat_id in (SECOND_BACKEND_GROUP_ID, SECOND_FRONTEND_GROUP_ID)
             or chat_id in EXTRA_GROUP_IDS)
 
 
