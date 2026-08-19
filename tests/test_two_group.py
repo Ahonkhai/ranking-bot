@@ -254,6 +254,54 @@ def test_speaking_in_either_group_indexes_you_on_the_shared_board(fresh_db, two_
     assert [r["user_id"] for r in found] == [555]
 
 
+# ── a third, unrelated group ────────────────────────────────────────────
+
+EXTRA = -1003333333333
+
+
+@pytest.fixture()
+def two_groups_plus_extra(monkeypatch, two_groups):
+    monkeypatch.setattr(config, "EXTRA_GROUP_IDS", (EXTRA,))
+    yield
+
+
+def test_extra_group_keeps_its_own_board(two_groups_plus_extra):
+    assert config.board_for(EXTRA) == EXTRA
+    assert config.board_for(EXTRA) != config.board_for(BACKEND)
+
+
+def test_extra_group_is_recognised(two_groups_plus_extra):
+    assert config.is_known_chat(EXTRA) is True
+    # A group not listed anywhere still isn't.
+    assert config.is_known_chat(STRANGER) is False
+
+
+def test_extra_group_may_change_its_own_scores(two_groups_plus_extra):
+    assert config.is_backend(EXTRA) is True
+
+
+def test_extra_group_is_not_pulled_into_shared_invalidation(two_groups_plus_extra):
+    assert config.chats_for_board(EXTRA) == (EXTRA,)
+    assert EXTRA not in config.chats_for_board(BACKEND)
+
+
+def test_extra_group_passes_the_gate_and_can_write(two_groups_plus_extra):
+    upd = FakeUpdate(EXTRA)
+    assert asyncio.run(common.ensure_group(upd)) is True
+    assert asyncio.run(common.require_backend(upd)) is True
+
+
+def test_extra_group_scores_stay_separate_from_the_shared_board(fresh_db, two_groups_plus_extra):
+    store.ensure_chat(config.board_for(BACKEND))
+    store.award(config.board_for(BACKEND), DAVID, 500, ADMIN)
+
+    store.ensure_chat(config.board_for(EXTRA))
+    store.award(config.board_for(EXTRA), DAVID, 50, ADMIN)
+
+    assert store.balance(config.board_for(BACKEND), DAVID) == 500
+    assert store.balance(config.board_for(EXTRA), DAVID) == 50
+
+
 def test_a_stranger_group_cannot_pollute_the_shared_index(fresh_db, two_groups):
     import asyncio
     from datetime import datetime, timezone

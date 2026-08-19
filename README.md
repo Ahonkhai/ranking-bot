@@ -203,6 +203,7 @@ All optional except the token.
 | `BACKEND_GROUP_ID` | — | Admin group. Set with the next one to share one board. |
 | `FRONTEND_GROUP_ID` | — | Public group. Read-only for scores. |
 | `ANNOUNCE_IN_FRONTEND` | `1` | Send unlock announcements to the public group. |
+| `EXTRA_GROUP_IDS` | — | Comma-separated chat ids that keep their own independent board even while two-group mode is on. |
 | `PAGE_SIZE` | `15` | Rows per leaderboard page. |
 | `CURRENCY_SYMBOL` | `$` | Printed before amounts on the rendered cards. |
 | `XP_LINEAR` | `500` | Linear term of the level curve. |
@@ -345,6 +346,25 @@ Set both and:
 
 Leave both unset and nothing changes: every chat keeps its own independent
 board, exactly as before.
+
+### Adding a second, unrelated group
+
+Turning on two-group mode locks out every other chat by default — "This bot
+isn't configured for this group" — since an unrecognised group being read or
+written to is more often a mistake than an intentional third community.
+
+To add a group with its **own separate board**, not connected to the
+backend/frontend pair, list it in `EXTRA_GROUP_IDS`:
+
+```
+EXTRA_GROUP_IDS=-100333333333               # one extra group
+EXTRA_GROUP_IDS=-100333333333,-100444444444 # or several
+```
+
+That chat behaves exactly like a single-group deployment: its own admins can
+run every command there, scores stay local to it, and nothing about it is
+merged with or visible from the backend/frontend board. Use `/chatid` in it
+to confirm it's recognised.
 
 ### Switching it on later
 

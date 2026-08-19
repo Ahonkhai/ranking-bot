@@ -96,6 +96,29 @@ TWO_GROUP_MODE = BACKEND_GROUP_ID is not None and FRONTEND_GROUP_ID is not None
 # Announce unlocks in the public group rather than wherever the admin typed.
 ANNOUNCE_IN_FRONTEND = _bool("ANNOUNCE_IN_FRONTEND", True)
 
+# Extra groups that keep their own independent board, unrelated to the
+# backend/frontend pair above. Without this, turning on two-group mode locks
+# every other chat out with "This bot isn't configured for this group" — this
+# is the escape hatch for a second community that just wants its own board
+# and shouldn't be merged into anyone else's scores.
+#
+# Comma-separated chat ids, e.g. EXTRA_GROUP_IDS=-100111,-100222
+def _group_ids(name: str) -> tuple[int, ...]:
+    raw = os.getenv(name, "")
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return tuple(ids)
+
+
+EXTRA_GROUP_IDS = _group_ids("EXTRA_GROUP_IDS")
+
 
 def board_for(chat_id: int) -> int:
     """The board a chat reads and writes.
@@ -119,12 +142,19 @@ def chats_for_board(board_id: int) -> tuple[int, ...]:
 
 
 def is_backend(chat_id: int) -> bool:
-    """Score-changing commands are only accepted here."""
-    return not TWO_GROUP_MODE or chat_id == BACKEND_GROUP_ID
+    """Score-changing commands are only accepted here.
+
+    An extra group is its own independent board, so it's exempt from the
+    backend-only restriction the same way a single-group deployment is —
+    there's no shared board there for a stray write to corrupt.
+    """
+    return not TWO_GROUP_MODE or chat_id == BACKEND_GROUP_ID or chat_id in EXTRA_GROUP_IDS
 
 
 def is_known_chat(chat_id: int) -> bool:
-    return not TWO_GROUP_MODE or chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+    return (not TWO_GROUP_MODE
+            or chat_id in (BACKEND_GROUP_ID, FRONTEND_GROUP_ID)
+            or chat_id in EXTRA_GROUP_IDS)
 
 
 CURRENCY = os.getenv("CURRENCY", "💰")

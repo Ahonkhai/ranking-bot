@@ -267,12 +267,17 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"<b>{esc(chat.title or 'this chat')}</b>",
              f"<code>{chat.id}</code>"]
     if config.TWO_GROUP_MODE:
-        role = ("admin group" if chat.id == config.BACKEND_GROUP_ID else
-                "public group" if chat.id == config.FRONTEND_GROUP_ID else
-                "not configured for this bot")
+        if chat.id == config.BACKEND_GROUP_ID:
+            role = "admin group"
+        elif chat.id == config.FRONTEND_GROUP_ID:
+            role = "public group"
+        elif chat.id in config.EXTRA_GROUP_IDS:
+            role = "standalone group (own board, not shared)"
+        else:
+            role = "not configured for this bot"
         lines.append("")
         lines.append(f"Role: {role}")
-        lines.append(f"Shared board: <code>{board}</code>")
+        lines.append(f"Board: <code>{board}</code>")
     else:
         lines.append("")
         lines.append("Two-group mode is off — this chat has its own board.")
