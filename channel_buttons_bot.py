@@ -17,6 +17,10 @@ Setup:
   4. In a private chat with the bot, forward the old channel post you want
      to add buttons to. It edits that exact message and confirms.
 
+To run this on Railway as a second service alongside the ranking bot, see the
+Channel Buttons Bot section of README.md — `railway.buttons.json` carries the
+start command that service needs.
+
 Env vars:
   BUTTON_BOT_TOKEN   Bot token from @BotFather.
   ALLOWED_USER_IDS   Comma-separated Telegram user IDs allowed to trigger
@@ -66,10 +70,47 @@ def parse_buttons(spec: str) -> InlineKeyboardMarkup:
 
 
 def parse_allowed_ids(raw: str) -> set[int]:
-    ids = {int(x) for x in raw.split(",") if x.strip()}
+    """Parse a comma-separated list of Telegram user ids."""
+    ids: set[int] = set()
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            ids.add(int(chunk))
+        except ValueError:
+            raise ValueError(f"{chunk!r} is not a numeric user id") from None
     if not ids:
-        raise ValueError("ALLOWED_USER_IDS is empty")
+        raise ValueError("no user ids given")
     return ids
+
+
+def _require(name: str) -> str:
+    """Read a required environment variable, or exit with a usable message.
+
+    Railway restarts a crashing service on a loop, so whatever the process
+    dies with is the *only* thing in the log — repeated every few seconds. A
+    bare `KeyError: 'BUTTON_BOT_TOKEN'` doesn't say which of the three vars
+    is wrong or where to look, so name it and point at the docs.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"{name} is not set — see the Channel Buttons Bot section of README.md")
+    return value
+
+
+def load_config() -> tuple[str, set[int], InlineKeyboardMarkup]:
+    """Read and validate every environment variable this bot needs."""
+    token = _require("BUTTON_BOT_TOKEN")
+    try:
+        allowed = parse_allowed_ids(_require("ALLOWED_USER_IDS"))
+    except ValueError as exc:
+        raise SystemExit(f"ALLOWED_USER_IDS is invalid: {exc}") from exc
+    try:
+        buttons = parse_buttons(_require("CHANNEL_BUTTONS"))
+    except ValueError as exc:
+        raise SystemExit(f"CHANNEL_BUTTONS is invalid: {exc}") from exc
+    return token, allowed, buttons
 
 
 async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -104,9 +145,7 @@ async def handle_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def build_app() -> Application:
-    token = os.environ["BUTTON_BOT_TOKEN"]
-    allowed = parse_allowed_ids(os.environ["ALLOWED_USER_IDS"])
-    buttons = parse_buttons(os.environ["CHANNEL_BUTTONS"])
+    token, allowed, buttons = load_config()
 
     app = Application.builder().token(token).build()
     app.bot_data["allowed_user_ids"] = allowed

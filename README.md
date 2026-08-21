@@ -498,6 +498,43 @@ The first line is one button on its own row; the second is two buttons side
 by side on the row below. The same layout is applied to whatever you forward
 — it's not customized per message.
 
+`ALLOWED_USER_IDS` is the only thing standing between your channel and anyone
+who finds the bot, so keep it tight. Get your own id from
+[@userinfobot](https://t.me/userinfobot).
+
+### Deploying it on Railway
+
+It runs as a **second service alongside the ranking bot**, from this same
+repo. It's a polling worker like the ranking bot: no HTTP port, no volume, no
+database — the only state is the three environment variables.
+
+1. In your Railway project: **New → GitHub Repo →** this repo. You now have a
+   second service building the same Dockerfile.
+2. In that service's **Settings → Config-as-code**, set the config file path
+   to `railway.buttons.json`. That's what points it at
+   `python channel_buttons_bot.py` instead of the ranking bot's `bot.py` —
+   without it, you get a second copy of the ranking bot and a token conflict.
+   (Equivalently: leave config-as-code alone and set **Custom Start Command**
+   to `python channel_buttons_bot.py` by hand.)
+3. Add the three variables under **Variables**.
+4. Deploy, then check the log for `Channel buttons bot starting`.
+
+Do **not** attach a volume to this service — it writes nothing. The
+`DB_PATH` inherited from the Dockerfile is unused here.
+
+Changing the button layout means editing `CHANNEL_BUTTONS` in the Railway
+dashboard, which triggers a redeploy on its own; the new layout applies to
+everything you forward after it comes back up. Posts already stamped keep the
+buttons they were given — re-forward one to overwrite it.
+
+If the service crash-loops, the log tells you which variable is wrong on a
+single line (`BUTTON_BOT_TOKEN is not set — …`) rather than a repeating
+traceback.
+
+**Use a different token from the ranking bot.** Two processes polling one
+token makes Telegram return `409 Conflict` to both, and each bot starts
+missing updates at random.
+
 ---
 
 ## Development
@@ -511,6 +548,8 @@ Layout:
 
 ```
 bot.py              entrypoint
+channel_buttons_bot.py   standalone bot: inline buttons onto old channel posts
+railway.buttons.json     Railway config for that second service
 rankbot/
   config.py         every environment variable
   db.py             connection + schema (versioned, self-migrating)
