@@ -453,6 +453,53 @@ of it.
 
 ---
 
+## Channel Buttons Bot
+
+A separate, small bot (`channel_buttons_bot.py`) for one job: adding inline
+buttons to old channel posts. It's independent of the ranking bot above — its
+own token, its own process.
+
+Telegram channel posts are attributed to the channel rather than to whichever
+admin sent them, so an admin bot with **Edit messages** rights can edit *any*
+post in the channel via the Bot API, not just ones it sent itself. That's what
+makes retroactively adding buttons possible without republishing anything.
+
+**Setup**
+
+1. Create a new bot with [@BotFather](https://t.me/BotFather) (a different one
+   from your ranking bot).
+2. Add it to the channel as admin, with **Edit messages** enabled.
+3. Run it:
+
+   ```bash
+   BUTTON_BOT_TOKEN="your_token" \
+   ALLOWED_USER_IDS="123456789" \
+   CHANNEL_BUTTONS="🔗 Join our chat -> https://t.me/joinchat/xxx" \
+   python channel_buttons_bot.py
+   ```
+
+4. In a private chat with the bot, **forward** the old channel post you want
+   buttons on. It edits that exact post and confirms.
+
+**Env vars**
+
+| Variable | What it is |
+|---|---|
+| `BUTTON_BOT_TOKEN` | Token from @BotFather. |
+| `ALLOWED_USER_IDS` | Comma-separated Telegram user IDs allowed to trigger edits. Forwards from anyone else are silently ignored. |
+| `CHANNEL_BUTTONS` | The button layout to stamp onto every forwarded post. Rows separated by newlines, buttons within a row by ` ; `, label/URL by ` -> `. |
+
+```
+🔗 Join our chat -> https://t.me/joinchat/xxx
+⭐ Rate us -> https://example.com/rate ; 📣 Share -> https://example.com/share
+```
+
+The first line is one button on its own row; the second is two buttons side
+by side on the row below. The same layout is applied to whatever you forward
+— it's not customized per message.
+
+---
+
 ## Development
 
 ```bash
